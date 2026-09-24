@@ -76,9 +76,18 @@ function deviceUsageBreakdown(device, entries, day) {
 function notify(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4500); }
 async function api(path, options) {
   const response = await fetch(path, options);
-  const body = await response.json();
+  const endpoint = new URL(path, location.href).pathname;
+  const raw = await response.text();
+  let body;
+  if (raw) {
+    try { body = JSON.parse(raw); }
+    catch {
+      if (response.ok) throw new Error(`The server returned invalid data for ${endpoint} (HTTP ${response.status}). Reload and try again.`);
+    }
+  }
   if (response.status === 401) { location.assign('/login'); throw new Error('Please sign in.'); }
-  if (!response.ok) throw new Error(body.error || 'Something went wrong. Please try again.');
+  if (!response.ok) throw new Error(body?.error || `Request to ${endpoint} failed (HTTP ${response.status}${raw ? '' : ', empty response'}).`);
+  if (body === undefined) throw new Error(`The server returned an empty response for ${endpoint} (HTTP ${response.status}). Reload and try again.`);
   if (options?.method && options.method !== 'GET') historyCache.clear();
   return body;
 }
@@ -241,11 +250,7 @@ async function loadDay() {
     renderEntries(); renderWeek(days, dates);
   } catch (error) {
     if (version !== loadId) return;
-    currentEntries = []; renderEntries();
-    for (const kind of ['water', 'work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = '—';
-    $('#week-chart').replaceChildren();
-    $('#screen-unique').textContent = '';
-    $('#entry-count').textContent = 'Could not load this day'; notify(error.message);
+    $('#entry-count').textContent = 'Could not refresh this day'; notify(error.message);
   }
 }
 function syncFields() {
