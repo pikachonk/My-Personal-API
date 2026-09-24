@@ -52,7 +52,7 @@ function entry(data) {
   if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1000000)) fail('value must be positive and no greater than 1,000,000.');
   if (kind === 'water' && (value === null || value > 10000 || end)) fail('Water requires 0–10,000 ml and a single timestamp.');
   if (['work', 'gym', 'sleep', 'screen'].includes(kind) && !end) fail('This activity requires an end time.');
-  return {id: crypto.randomUUID(), kind, label: text(data, 'label') || kind[0].toUpperCase() + kind.slice(1),
+  return {id: crypto.randomUUID(), kind, label: text(data, 'label', '', 253) || kind[0].toUpperCase() + kind.slice(1),
     started_at: start, ended_at: end, value, unit: kind === 'water' ? 'ml' : text(data, 'unit', '', 30),
     notes: text(data, 'notes', '', 2000), source: text(data, 'source', 'manual', 80) || 'manual',
     created_at: nowISO(), device_id: null, external_id: null};
@@ -78,6 +78,13 @@ async function readBody(request, limit = 16384) {
 function hex(bytes) { return [...new Uint8Array(bytes)].map(x => x.toString(16).padStart(2, '0')).join(''); }
 async function hash(value) { return hex(await crypto.subtle.digest('SHA-256', encoder.encode(value))); }
 function randomToken() { return hex(crypto.getRandomValues(new Uint8Array(32))); }
+function extensionCors(origin) {
+  return /^chrome-extension:\/\/[a-p]{32}$/.test(origin || '')
+    ? {'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Max-Age': '86400', Vary: 'Origin'}
+    : {};
+}
+function extensionOrigin(request) { return extensionCors(request.headers.get('Origin'))['Access-Control-Allow-Origin'] || ''; }
 async function signingKey(password) {
   return crypto.subtle.importKey('raw', encoder.encode(password), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign', 'verify']);
 }
@@ -137,12 +144,21 @@ async function sync(request, env) {
   for (const event of data.events) {
     object(event);
     if (typeof event.event_id !== 'string' || !event.event_id.length || event.event_id.length > 160) fail('Each session requires a stable event_id, up to 160 characters.');
-    const item = entry({kind: 'screen', label: event.app, started_at: event.started_at,
-      ended_at: event.ended_at, source: device.platform + '-collector'});
+    const type = event.type === undefined ? 'app' : event.type;
+    if (!['app', 'website'].includes(type)) fail('Session type must be app or website.');
+    if (type === 'website' && device.platform !== 'windows') fail('Website sessions require a Windows pairing.');
+    const label = type === 'website' ? text(event, 'app', '', 253) : text(event, 'app', '', 200);
+    if (type === 'website' && !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/.test(label))
+      fail('Website sessions must contain only a lowercase domain name.');
+    const source = type === 'website' ? 'windows-browser' : device.platform + '-collector';
+    const item = entry({kind: 'screen', label, started_at: event.started_at,
+      ended_at: event.ended_at, source});
     if (Date.parse(item.ended_at) > Date.now() + 300000) fail('Screen time cannot be in the future. Check the device clock.');
     item.device_id = device.id; item.external_id = event.event_id;
     // Store the compact canonical content directly; equality needs no per-event crypto calls.
-    const digest = JSON.stringify([item.label, item.started_at, item.ended_at]);
+    // Keep the existing app digest unchanged so retries queued before deployment remain valid.
+    const digest = type === 'app' ? JSON.stringify([item.label, item.started_at, item.ended_at])
+      : JSON.stringify([type, item.label, item.started_at, item.ended_at]);
     if (unique.has(event.event_id) && unique.get(event.event_id).digest !== digest) fail('An event_id was reused for a different session.');
     unique.set(event.event_id, {...item, digest});
   }
@@ -161,7 +177,7 @@ async function sync(request, env) {
       ON CONFLICT(device_id,event_id) DO UPDATE SET digest=excluded.digest WHERE sync_receipts.digest!=excluded.digest`)
       .bind(device.id, payload),
   ]);
-  return json({accepted: data.events.length, inserted: result[1].meta.changes, server_time: nowISO()});
+  return json({accepted: data.events.length, inserted: result[1].meta.changes, server_time: nowISO()}, 200, extensionCors(request.headers.get('Origin')));
 }
 function dayBounds(query) {
   const day = query.get('date') || new Date().toISOString().slice(0, 10);
@@ -184,8 +200,8 @@ function summarize(entries, start, end) {
     if (e.kind === 'water') totals.water_ml += e.value;
     else if (['work', 'gym', 'sleep', 'screen'].includes(e.kind)) {
       const s = Math.max(Date.parse(e.started_at), start), t = Math.min(Date.parse(e.ended_at), end);
-      totals[e.kind + '_minutes'] += Math.max(0, t - s) / 60000;
-      if (e.kind === 'screen' && t > s) intervals.push([s, t]);
+      if (e.kind !== 'screen' || e.source !== 'windows-browser') totals[e.kind + '_minutes'] += Math.max(0, t - s) / 60000;
+      if (e.kind === 'screen' && e.source !== 'windows-browser' && t > s) intervals.push([s, t]);
     }
   }
   intervals.sort((a, b) => a[0] - b[0]);
@@ -210,8 +226,12 @@ async function exportPage(url, env) {
 async function route(request, env) {
   if (!env.ADMIN_PASSWORD || env.ADMIN_PASSWORD.length < 16) fail('Set the ADMIN_PASSWORD Worker secret before using the dashboard.', 503);
   const url = new URL(request.url), path = url.pathname, method = request.method;
+  const origin = request.headers.get('Origin') || '';
+  const browserSync = path === '/api/sync' && !!extensionOrigin(request);
   if (!env.PUBLIC_ORIGIN || url.origin !== env.PUBLIC_ORIGIN ||
-      (request.headers.has('Origin') && request.headers.get('Origin') !== env.PUBLIC_ORIGIN)) fail("Use the dashboard's configured address.", 403);
+      (origin && origin !== env.PUBLIC_ORIGIN && !browserSync)) fail("Use the dashboard's configured address.", 403);
+  if (method === 'OPTIONS' && path === '/api/sync' && browserSync)
+    return new Response(null, {status: 204, headers: {...securityHeaders, ...extensionCors(origin)}});
   if (method === 'POST' && path === '/api/sync') return sync(request, env);
   if (method === 'POST' && path === '/api/login') return login(request, env);
   const publicAsset = ['/login', '/login.js', '/style.css'].includes(path) && ['GET', 'HEAD'].includes(method);
@@ -266,12 +286,13 @@ export default {
   async fetch(request, env) {
     try { return await route(request, env); }
     catch (error) {
-      if (error instanceof HttpError) return json({error: error.message}, error.status);
+      const cors = new URL(request.url).pathname === '/api/sync' ? extensionCors(request.headers.get('Origin')) : {};
+      if (error instanceof HttpError) return json({error: error.message}, error.status, cors);
       const detail = `${error.message} ${error.cause?.message || ''}`;
-      if (detail.includes('event_id_conflict')) return json({error: 'An event_id was reused for a different session.'}, 400);
-      if (detail.includes('device_revoked')) return json({error: 'Device key invalid or revoked. Pair the device again.'}, 401);
+      if (detail.includes('event_id_conflict')) return json({error: 'An event_id was reused for a different session.'}, 400, cors);
+      if (detail.includes('device_revoked')) return json({error: 'Device key invalid or revoked. Pair the device again.'}, 401, cors);
       // Never return/log request bodies, credentials, or SQL parameters.
-      return json({error: 'Could not access the database. Retry with the same event IDs.'}, 503);
+      return json({error: 'Could not access the database. Retry with the same event IDs.'}, 503, cors);
     }
   },
 };

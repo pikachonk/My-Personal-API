@@ -1,6 +1,14 @@
 const $ = (selector) => document.querySelector(selector);
 const names = {water: 'Hydration', work: 'Work', gym: 'Movement', sleep: 'Sleep', screen: 'Screen time', custom: 'Custom'};
 const symbols = {water: '◒', work: '▧', gym: '↗', sleep: '☾', screen: '▣', custom: '◇'};
+const knownApps = {
+  'chrome.exe': 'Google Chrome', 'msedge.exe': 'Microsoft Edge', 'firefox.exe': 'Firefox', 'explorer.exe': 'File Explorer',
+  'code.exe': 'Visual Studio Code', 'spotify.exe': 'Spotify', 'discord.exe': 'Discord', 'teams.exe': 'Microsoft Teams',
+  'com.android.chrome': 'Chrome', 'com.google.android.youtube': 'YouTube', 'com.google.android.apps.youtube.music': 'YouTube Music',
+  'com.google.android.gm': 'Gmail', 'com.google.android.apps.maps': 'Google Maps', 'com.google.android.apps.photos': 'Google Photos',
+  'com.google.android.apps.messaging': 'Google Messages', 'com.google.android.dialer': 'Phone', 'com.spotify.music': 'Spotify',
+  'com.whatsapp': 'WhatsApp', 'com.instagram.android': 'Instagram', 'com.facebook.katana': 'Facebook',
+};
 let currentEntries = [];
 let currentDevices = [];
 let pairingConfig = null;
@@ -11,6 +19,15 @@ const pad = (n) => String(n).padStart(2, '0');
 function localDate(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function localInput(d) { return `${localDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function duration(minutes) { const n = Math.round(minutes); return n >= 60 ? `${Math.floor(n / 60)}h ${n % 60}m` : `${n}m`; }
+function displayAppName(label) {
+  if (knownApps[label.toLowerCase()]) return knownApps[label.toLowerCase()];
+  if (/\.exe$/i.test(label)) return label.slice(0, -4).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, c => c.toUpperCase());
+  if (/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,}$/i.test(label)) {
+    const tail = label.split('.').at(-1);
+    return tail.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, c => c.toUpperCase());
+  }
+  return label;
+}
 function notify(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4500); }
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -45,7 +62,7 @@ function renderEntries() {
   const entries = [];
   for (const entry of selected) {
     if (entry.kind !== 'screen' || !entry.device_id) { entries.push(entry); continue; }
-    const key = JSON.stringify([entry.device_id, entry.label]);
+    const key = JSON.stringify([entry.device_id, entry.label, entry.source]);
     if (!groups.has(key)) groups.set(key, {...entry, session_count:0, daily_minutes:0});
     const group = groups.get(key); group.session_count++;
     group.daily_minutes += minutesInDay(entry, $('#selected-date').value);
@@ -63,8 +80,10 @@ function renderEntries() {
     const copy = node('div', 'entry-copy');
     const fmt = d => new Date(d).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
     const times = fmt(entry.started_at) + (entry.ended_at ? ` → ${fmt(entry.ended_at)}` : '');
-    const subtitle = entry.session_count ? `Automatic · ${entry.device_name || 'Device'} · ${entry.session_count} sessions` : `${names[entry.kind]} · ${times}${entry.source !== 'manual' ? ` · ${entry.source}` : ''}`;
-    copy.append(node('div', 'entry-title', entry.label), node('div', 'entry-subtitle', subtitle));
+    const website = entry.source === 'windows-browser';
+    const title = entry.kind === 'screen' && !website ? displayAppName(entry.label) : entry.label;
+    const subtitle = entry.session_count ? `${website ? 'Website' : 'App'} · ${entry.device_name || 'Device'} · ${entry.session_count} sessions` : `${names[entry.kind]} · ${times}${entry.source !== 'manual' ? ` · ${entry.source}` : ''}`;
+    copy.append(node('div', 'entry-title', title), node('div', 'entry-subtitle', subtitle));
     if (entry.notes) copy.append(node('p', 'entry-notes', entry.notes));
     const amount = entry.session_count ? duration(entry.daily_minutes) : entry.kind === 'water' ? `${entry.value.toLocaleString()} ml` : entry.ended_at ? duration(minutesInDay(entry, $('#selected-date').value)) : entry.value ? `${entry.value} ${entry.unit}` : '';
     const remove = node('button', 'delete-entry', '×');
@@ -125,19 +144,28 @@ async function loadDay() {
     for (const kind of ['work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = duration(data.totals[`${kind}_minutes`]);
     $('#entry-count').textContent = `${data.entries.length} ${data.entries.length === 1 ? 'activity' : 'activities'} logged`;
     $('#day-label').textContent = selected.toLocaleDateString([], {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}).toUpperCase();
-    const apps = new Map();
-    for (const entry of data.entries.filter(e => e.kind === 'screen')) apps.set(entry.label, (apps.get(entry.label) || 0) + minutesInDay(entry, value));
+    const apps = new Map(), sites = new Map();
+    for (const entry of data.entries.filter(e => e.kind === 'screen')) {
+      const destination = entry.source === 'windows-browser' ? sites : apps;
+      const label = destination === sites ? entry.label : displayAppName(entry.label);
+      destination.set(label, (destination.get(label) || 0) + minutesInDay(entry, value));
+    }
     $('#screen-apps').replaceChildren();
     if (!apps.size) $('#screen-apps').append(node('p', 'muted small', 'No screen time recorded for this day.'));
     [...apps.entries()].sort((a,b) => b[1]-a[1]).slice(0,3).forEach(([label, minutes]) => {
       const row = node('div', 'app-row'); row.append(node('span', '', label), node('span', '', duration(minutes))); $('#screen-apps').append(row);
+    });
+    $('#screen-sites').replaceChildren();
+    if (!sites.size) $('#screen-sites').append(node('p', 'muted small', 'No website activity recorded for this day.'));
+    [...sites.entries()].sort((a,b) => b[1]-a[1]).slice(0,3).forEach(([label, minutes]) => {
+      const row = node('div', 'app-row'); row.append(node('span', '', label), node('span', '', duration(minutes))); $('#screen-sites').append(row);
     });
     renderEntries(); renderWeek(days, dates);
   } catch (error) {
     if (version !== loadId) return;
     currentEntries = []; renderEntries();
     for (const kind of ['water', 'work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = '—';
-    $('#screen-apps').replaceChildren(); $('#week-chart').replaceChildren();
+    $('#screen-apps').replaceChildren(); $('#screen-sites').replaceChildren(); $('#week-chart').replaceChildren();
     $('#screen-unique').textContent = '';
     $('#entry-count').textContent = 'Could not load this day'; notify(error.message);
   }
@@ -225,11 +253,26 @@ function renderDevices(sync) {
   $('#device-count').textContent = `${devices.length} paired`;
   $('#sync-status').textContent = sync.enabled ? `Sync server: ${sync.url}` : 'Cloud setup needed. Deploy your server, then open its dashboard to pair your five devices.';
   $('#pair-device').disabled = !sync.enabled;
-  const total = id => currentEntries.filter(e => e.kind === 'screen' && e.device_id === id).reduce((sum,e) => sum + minutesInDay(e, $('#selected-date').value), 0);
+  const total = id => currentEntries.filter(e => e.kind === 'screen' && e.source !== 'windows-browser' && e.device_id === id).reduce((sum,e) => sum + minutesInDay(e, $('#selected-date').value), 0);
   for (const device of devices) {
     const card = node('article', 'device-card');
     card.append(node('span', 'device-type', device.platform === 'android' ? 'GOOGLE PIXEL / ANDROID' : 'WINDOWS PC'), node('h3', '', device.name), node('div', 'device-minutes', duration(total(device.id))));
     card.append(node('p', 'muted small', device.last_seen ? `Last synced ${new Date(device.last_seen).toLocaleString()}` : 'Waiting for the first sync'));
+    const deviceEntries = currentEntries.filter(e => e.kind === 'screen' && e.device_id === device.id);
+    const addBreakdown = (label, website) => {
+      const totals = new Map();
+      for (const entry of deviceEntries.filter(e => (e.source === 'windows-browser') === website)) {
+        const name = website ? entry.label : displayAppName(entry.label);
+        totals.set(name, (totals.get(name) || 0) + minutesInDay(entry, $('#selected-date').value));
+      }
+      if (!totals.size) return;
+      card.append(node('div', 'device-breakdown-title', label));
+      for (const [name, minutes] of [...totals.entries()].sort((a,b) => b[1]-a[1]).slice(0,3)) {
+        const row = node('div', 'device-breakdown-row'); row.append(node('span', '', name), node('span', '', duration(minutes))); card.append(row);
+      }
+    };
+    addBreakdown('Top apps', false);
+    addBreakdown('Top websites', true);
     const revoke = node('button', 'text-button', 'Revoke pairing');
     revoke.addEventListener('click', async () => {
       if (!confirm(`Revoke “${device.name}”? Its uploads will stop. Existing history will remain. Pause or uninstall its collector to stop local recording.`)) return;
@@ -258,7 +301,7 @@ $('#device-form').addEventListener('submit', async event => {
     pairingConfig = await api('/api/devices', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:$('#device-name').value, platform:$('#device-platform').value})});
     $('#pair-json').value = JSON.stringify(pairingConfig,null,2);
     $('#pair-fields').hidden = true; $('#pair-result').hidden = false;
-    $('#pair-instructions').textContent = pairingConfig.platform === 'android' ? 'Install SimonSealsAPI.apk on this Pixel, import this pairing file, and allow Usage Access. The phone will collect and sync automatically.' : 'Download this file on the matching Windows PC, then run the Windows installer with this file. Collection starts automatically at sign-in.';
+    $('#pair-instructions').textContent = pairingConfig.platform === 'android' ? 'Install SimonSealsAPI.apk on this Pixel, import this pairing file, and allow Usage Access. The phone will collect and sync automatically.' : 'Download this file on the matching Windows PC and use it for the Windows installer. To track Chrome websites too, load the Chrome extension from the project and paste this same pairing JSON there.';
     await loadDay();
   } catch(error) { $('#pair-error').textContent = error.message; }
   finally { $('#create-pairing').disabled = false; }

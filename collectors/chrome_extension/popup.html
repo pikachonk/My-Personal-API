@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SimonSealsAPI Website Time</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <h1>Website time</h1>
+  <p class="intro">Tracks the domain of the active Chrome tab while you are using your computer. Page paths, search terms, titles, and incognito tabs are not recorded.</p>
+  <label for="pairing">Paste the same Windows pairing JSON you use for SimonSealsAPI.</label>
+  <textarea id="pairing" rows="5" spellcheck="false" placeholder="Paste pairing JSON here"></textarea>
+  <button id="connect">Connect this PC</button>
+  <p id="status" role="status">Not connected.</p>
+  <button id="toggle" class="secondary" disabled>Pause tracking</button>
+  <p class="note">Website time is part of Chrome's app time. Use your private device pairing key only in this extension on your own PC.</p>
+</body>
+</html>

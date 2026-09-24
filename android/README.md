@@ -2,7 +2,7 @@
 
 The companion uses Android's UsageStatsManager and JobScheduler. It needs Android 10+ and one-time Usage Access permission. Pair it using a separate Android pairing JSON from your cloud dashboard. The UI imports that file through Android's file picker.
 
-The app records foreground app intervals, closes sessions on screen-off, lock, and shutdown events, and persists a cursor and pending uploads in one SQLite transaction. Upload acknowledgements remove pending records only after server acceptance. No Accessibility API or screen recording permission is used.
+The app records foreground app intervals using Android's displayed app names, closes sessions on screen-off, lock, and shutdown events, and persists a cursor and pending uploads in one SQLite transaction. It queries package metadata only to resolve names for apps present in usage events. Older queued or already-synced sessions may still show package IDs. Upload acknowledgements remove pending records only after server acceptance. No Accessibility API or screen recording permission is used.
 
 Jobs are requested every 15 minutes, persist across reboot, and can be delayed by Android's power management. Collection starts at pairing. It measures foreground usage rather than precisely reproducing Digital Wellbeing. Activity lifecycle/multi-window behavior and gaps in retained OS history may cause differences. Pause/resume intentionally excludes paused time. Uninstalling or clearing app storage removes unsent records.
 

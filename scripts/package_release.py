@@ -15,6 +15,10 @@ with zipfile.ZipFile(release / "SimonSealsAPI-cloud.zip", "w", zipfile.ZIP_DEFLA
 with zipfile.ZipFile(release / "SimonSealsAPI-windows.zip", "w", zipfile.ZIP_DEFLATED) as bundle:
     for name in ("windows_screen.py", "sync_client.py", "install_windows.ps1"):
         bundle.write(ROOT / "collectors" / name, name)
+    extension = ROOT / "collectors" / "chrome_extension"
+    for path in extension.rglob("*"):
+        if path.is_file():
+            bundle.write(path, "chrome-extension/" + path.relative_to(extension).as_posix())
     bundle.write(ROOT / "CLOUD_SETUP.md", "SETUP.md")
 worker = ["README.md", "CLOUD_SETUP.md", "VM_SETUP.md", "cloudflare/package.json", "cloudflare/package-lock.json",
           "cloudflare/wrangler.jsonc", "cloudflare/.dev.vars.example"]

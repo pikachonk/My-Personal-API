@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "SimonSealsAPI Website Time",
+  "version": "1.0.0",
+  "description": "Records time spent on the active Chrome website for your SimonSealsAPI dashboard.",
+  "permissions": ["alarms", "idle", "storage", "tabs"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "SimonSealsAPI website tracking", "default_popup": "popup.html" }
+}

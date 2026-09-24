@@ -5,6 +5,8 @@ import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.Process;
 import org.json.JSONArray;
@@ -72,7 +74,7 @@ final class Collector {
         if (events == null) throw new Exception("Unlock the phone once after restarting.");
         SQLiteDatabase db = store.getWritableDatabase(); db.beginTransaction();
         try {
-            SessionTracker tracker = new SessionTracker(store::add);
+            SessionTracker tracker = new SessionTracker((pkg, start, finish) -> store.add(appLabel(context, pkg), start, finish));
             // Android retains event history for only a few days. Don't bridge an unobserved long gap.
             if (end - begin <= 48L * 3600000) {
                 tracker.app = store.get("app", ""); tracker.activity = store.get("activity", "");
@@ -89,6 +91,13 @@ final class Collector {
             store.set("cursor", Long.toString(end));
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
+    }
+    private static String appLabel(Context context, String packageName) {
+        try {
+            ApplicationInfo info = context.getPackageManager().getApplicationInfo(packageName, 0);
+            CharSequence label = info.loadLabel(context.getPackageManager());
+            return label == null || label.length() == 0 ? packageName : label.toString();
+        } catch (PackageManager.NameNotFoundException ignored) { return packageName; }
     }
     private static void send(JSONObject config, JSONArray events) throws Exception {
         String origin = config.getString("server_url").replaceAll("/+$", "");

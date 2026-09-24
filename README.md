@@ -8,8 +8,8 @@ A personal dashboard and API with automatic screen-time collection across three 
 
 Each device needs a one-time installation and its own pairing file. After setup, no manual screen-time logging is required.
 
-- **Windows:** foreground app sampling every five seconds; durable local SQLite queue; background HTTPS sync about every minute; automatic start at Windows sign-in. Chrome is recorded as `chrome.exe`, alongside other Windows apps.
-- **Pixel / Android 10+:** companion APK uses Android Usage Access, stores sessions locally, and schedules background collection/sync about every 15 minutes. Android may delay jobs. No accessibility service, screenshots, browsing history, message content, or keystrokes are collected.
+- **Windows:** foreground app sampling every five seconds; durable local SQLite queue; background HTTPS sync about every minute; automatic start at Windows sign-in. An optional Chrome extension records the active website's domain alongside app time.
+- **Pixel / Android 10+:** companion APK uses Android Usage Access, stores readable foreground app names locally, and schedules background collection/sync about every 15 minutes. Android may delay jobs. No accessibility service, screenshots, message content, or keystrokes are collected.
 - **Cloud:** password-protected dashboard, HTTPS, individual revocable device keys, retry deduplication, per-device daily totals, and an additional total that counts simultaneous usage only once.
 
 **Start here: [cloud and device setup](CLOUD_SETUP.md).**
@@ -67,6 +67,7 @@ The Android build requires a Windows JDK (Java 11+) and downloads checksum-verif
 - Local time boundaries, overnight sessions, and daylight-saving changes are handled in the dashboard.
 - Device totals add usage across devices. The separate elapsed screen-time total merges overlapping intervals.
 - Windows excludes lock screens, sleep gaps, and samples after five minutes without input. Passive video watching may therefore be excluded. Sampling is approximate.
+- The optional Chrome extension reads only the active tab's domain, excludes incognito tabs, and stores no page paths, search terms, or titles. Website time is a breakdown of Windows Chrome time and is not added again to screen-time totals.
 - Android measures foreground app usage, not a clone of Digital Wellbeing. Multi-window behavior, missed OS events, force-stop, or long background restrictions can cause differences or gaps. Collection begins after pairing; old phone history is not imported. Usage-event history is retained by Android only for a few days.
 - Revoking a key stops uploads; pause/uninstall the collector to stop local recording. Queues survive restarts and retry, but clearing app data/uninstalling deletes unsent phone records.
 - JSON export includes activity and device metadata, never device keys. SQLite and collector queues are not independently encrypted by SimonSealsAPI; device/server disk protection is managed by the operating system.

@@ -17,7 +17,7 @@ Use the Cloudflare account that owns `simonsealsapi.dev`. In Cloudflare, confirm
 In this workspace, run:
 
 ```powershell
-cd "C:\Users\pikac\Simon\My Personal API\cloudflare"
+cd "C:\Users\pikac\Simon\My-Personal-API\cloudflare"
 npm ci
 npm run cf -- login
 ```
@@ -30,9 +30,17 @@ npm run cf -- whoami
 
 The dependencies have already been installed in this workspace. On a fresh checkout, run `npm ci` first. The project includes a local Node 22 runtime for its npm scripts because this PC's system Node 21 is too old for current Wrangler; it does not replace your system Node. On another computer, install Node.js 22 or newer with npm first. If PowerShell blocks npm.ps1, use **npm.cmd** in these commands.
 
-If using the release ZIP instead, extract SimonSealsAPI-cloudflare.zip and open PowerShell inside its cloudflare subfolder.
+The release ZIPs are generated locally and are not included in the GitHub repository. To create them from a checkout, open PowerShell at the repository root, run `python android/build.py`, then `python scripts/package_release.py`. Extract `release/SimonSealsAPI-cloudflare.zip` and open PowerShell in its `cloudflare` subfolder. Otherwise, continue using the checked-out `cloudflare` folder.
 
-### Create the persistent database
+### Confirm or create the persistent database
+
+This repository is already configured to use the existing `simonsealsapi-db` database. For this deployment, check that it appears in the account's database list and keep the ID in `cloudflare/wrangler.jsonc`:
+
+```powershell
+npm run cf -- d1 list
+```
+
+Do not create a replacement database or run `configure-db` for the current deployment. Only create a database if you are intentionally setting up a separate deployment with a separate database.
 
 ```powershell
 npm run cf -- d1 create simonsealsapi-db --location enam --update-config=false
@@ -44,7 +52,7 @@ The enam hint requests Eastern North America; it does not guarantee Canadian res
 npm run configure-db -- YOUR-DATABASE-ID
 ```
 
-This updates cloudflare/wrangler.jsonc. A database ID is an identifier, not a password. If the database already exists, use `npm run cf -- d1 list` to find its ID; do not delete it or create a replacement during updates. If Wrangler asks which account to use, choose the one containing your domain.
+For a separate deployment, this updates `cloudflare/wrangler.jsonc` to point to the new database. A database ID is an identifier, not a password. Never replace the configured ID for the current deployment. If Wrangler asks which account to use, choose the one containing your domain.
 
 ### Set your dashboard password
 
@@ -79,9 +87,9 @@ The domain must finish HTTPS provisioning before collectors can connect. Do not 
 
 This deployment does not subscribe to a paid Workers plan. Keep your account on Free; check **Workers & Pages usage** and **D1 metrics/storage** after your devices have been running. Actual usage depends on app switching, dashboard views, and accumulated history.
 
-As checked September 2026, Workers Free allows 100,000 requests/day and 10 ms CPU per invocation. D1 Free allows 5 million rows read/day, 100,000 rows written/day, and **500 MB per database** (5 GB total across the account). Index maintenance also counts toward writes. Limits are shared with your other apps. These are allowances, not a guarantee that unlimited history stays free. See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) and [D1 limits](https://developers.cloudflare.com/d1/platform/limits/).
+As checked September 2026, Workers Free allows 100,000 requests/day and 10 ms CPU per invocation. D1 Free allows 5 million rows read/day, 100,000 rows written/day, and **500 MB per database** (5 GB total across the account). Index maintenance also counts toward writes, and usage is shared with your other apps. Since September 1, 2026, exceeding a D1 daily read or write limit causes queries to fail until the quota resets at midnight UTC. Reaching the storage limit can prevent inserts and schema changes until space is freed or the plan is changed. See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), and [D1 Free-plan enforcement](https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/).
 
-Uploads use a three-statement database transaction for up to 200 events. Day queries use indexed time ranges; older chart days are cached in the browser for ten minutes. The selected day still refreshes about once a minute. Hosted CPU usage and real-world quotas need checking after deployment. If a free limit is reached, operations may fail until the limit resets or capacity is addressed; collectors keep unacknowledged uploads queued locally. No history is automatically deleted. Review database growth and back up before approaching 500 MB.
+Uploads use a three-statement database transaction for up to 200 events. Day queries use indexed time ranges; older chart days are cached in the browser for ten minutes. The selected day still refreshes about once a minute. Hosted CPU usage and real-world quotas need checking after deployment. If a daily limit is reached, affected requests can fail until it resets; collectors keep unacknowledged uploads queued locally. No history is automatically deleted. Review database growth and back up before approaching 500 MB.
 
 ## 2. Pair three Windows PCs
 
@@ -99,15 +107,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install_windows.ps1 -Confi
 
 The installer copies the collector to `%LOCALAPPDATA%\Daybook\collector`, limits access to the pairing key, creates a per-user Startup shortcut, and starts a hidden collector. You do not need to keep a terminal open. Only one collector runs per Windows sign-in session.
 
-The Windows account must be signed in. Sleep, shutdown, and the lock screen are excluded. The default five-minute idle cutoff also excludes long passive sessions such as video playback without input. Chrome appears as one app; site-by-site browsing is not captured.
+The Windows account must be signed in. Sleep, shutdown, and the lock screen are excluded. The default five-minute idle cutoff also excludes long passive sessions such as video playback without input. Windows app names are recorded as process names; Chrome's website detail is an optional Chrome extension described below.
 
 Records waiting for upload and rotating diagnostic logs are stored under `%LOCALAPPDATA%\Daybook\DEVICE-ID`. A failed network request keeps the records on disk. The cloud rejects repeated event IDs, so retries cannot duplicate the same session.
 
 To disable future auto-start, delete **SimonSealsAPI Screen Time** from your Windows Startup folder (`shell:startup`). To stop a running collector, end its `pythonw.exe` process in Task Manager, verifying its command line points to SimonSealsAPI. Revoking the device in the dashboard stops uploads but does not stop local recording.
 
+### Track active websites in Chrome
+
+The Chrome extension records the domain of the active tab on a paired Windows PC. It does not record page paths, search terms, page titles, or browsing history. Incognito tabs and non-web pages are excluded. The Chrome `tabs` permission can be described by Chrome as access to browsing history; the extension uses it to inspect the active tab URL and keeps only its domain.
+
+Use the original Windows pairing JSON for that PC. The dashboard cannot reveal an existing device key again; if you no longer have the file, create a new Windows pairing and update the Windows installer and Chrome extension to use that new key.
+
+1. Open `chrome://extensions` in Chrome and turn on **Developer mode**.
+2. Choose **Load unpacked**. Select `collectors/chrome_extension` from the project checkout, or the `chrome-extension` folder from `SimonSealsAPI-windows.zip`.
+3. Click the SimonSealsAPI extension icon, paste the same Windows pairing JSON used by the Windows installer, and choose **Connect this PC**. Approve Chrome's request to connect to your SimonSealsAPI server.
+4. The extension starts tracking the active website in the focused Chrome window. Its popup shows connection status and lets you pause or resume website tracking.
+
+The extension keeps unsent website sessions in the Chrome profile and retries them. Tracking is sampled about once a minute and uses the same five-minute inactivity cutoff as the Windows collector. It starts after setup; it cannot import past browsing activity. The domain breakdown is part of Chrome's app time, so it does not add extra minutes to the screen-time total. The Windows collector and extension use the same pairing: revoking that Windows key stops uploads from both. To stop local recording, pause the extension and stop or disable the Windows collector too.
+
 ## 3. Pair both Google Pixel phones
 
 Create a separate **Google Pixel / Android** pairing for each phone in the cloud dashboard.
+
+The APK is not included in this GitHub repository. From a fresh checkout, build it at the repository root with `python android/build.py`; this creates `android/build/SimonSealsAPI.apk`. See [android/README.md](android/README.md) for the JDK requirement. To package the local release files, run `python scripts/package_release.py` after building the APK.
 
 On each Pixel:
 
@@ -125,7 +148,7 @@ The APK has been compiled and signature-verified, and the foreground-session sta
 
 ## 4. Understand the numbers
 
-Every device card shows its daily total and actual last successful upload. A paired device with no uploads is shown as waiting, not connected. The main screen-time number adds all devices. The line underneath merges overlapping time, so 30 minutes using a phone while on a PC counts as 30 elapsed minutes and 60 device-minutes. Screen time is grouped by app and device in the journal.
+Every device card shows its daily app total and actual last successful upload. A paired device with no uploads is shown as waiting, not connected. The main screen-time number adds app time across devices. The line underneath merges overlapping app intervals, so 30 minutes using a phone while on a PC counts as 30 elapsed minutes and 60 device-minutes. App and website breakdowns are shown by device in the dashboard and journal. Website time is a detail within Windows Chrome time and is not counted twice.
 
 ## Backups and updates
 
