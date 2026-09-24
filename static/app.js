@@ -28,6 +28,51 @@ function displayAppName(label) {
   }
   return label;
 }
+function deviceUsageBreakdown(device, entries, day) {
+  const isWindowsChrome = label => device.platform === 'windows' && ['chrome.exe', 'google chrome'].includes(label.toLowerCase());
+  const totals = new Map();
+  const chromeIntervals = [];
+  let chromeMinutes = 0;
+  for (const entry of entries.filter(e => e.kind === 'screen' && e.device_id === device.id && e.source !== 'windows-browser')) {
+    const interval = intervalInDay(entry, day);
+    if (!interval) continue;
+    const minutes = (interval.end - interval.start) / 60000;
+    if (isWindowsChrome(entry.label)) {
+      chromeIntervals.push(interval);
+      chromeMinutes += minutes;
+    } else {
+      const label = displayAppName(entry.label);
+      totals.set(label, (totals.get(label) || 0) + minutes);
+    }
+  }
+
+  // Website sessions are detail within Chrome time, so clip them to Chrome's
+  // foreground intervals and allocate overlapping intervals only once.
+  const siteSegments = [];
+  if (chromeIntervals.length) {
+    for (const entry of entries.filter(e => e.kind === 'screen' && e.device_id === device.id && e.source === 'windows-browser')) {
+      const site = intervalInDay(entry, day);
+      if (!site) continue;
+      for (const chrome of chromeIntervals) {
+        const start = Math.max(site.start, chrome.start), end = Math.min(site.end, chrome.end);
+        if (end > start) siteSegments.push({label: entry.label, start, end});
+      }
+    }
+  }
+  siteSegments.sort((a, b) => a.start - b.start || a.end - b.end);
+  let allocatedUntil = -Infinity, siteMinutes = 0;
+  for (const segment of siteSegments) {
+    const start = Math.max(segment.start, allocatedUntil);
+    if (segment.end <= start) continue;
+    const minutes = (segment.end - start) / 60000;
+    totals.set(segment.label, (totals.get(segment.label) || 0) + minutes);
+    siteMinutes += minutes;
+    allocatedUntil = segment.end;
+  }
+  const chromeWithoutSites = Math.max(0, chromeMinutes - siteMinutes);
+  if (chromeWithoutSites > 0.001) totals.set('Chrome (site not identified)', chromeWithoutSites);
+  return [...totals.entries()].map(([label, minutes]) => ({label, minutes})).filter(item => item.minutes > 0);
+}
 function notify(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4500); }
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -53,6 +98,55 @@ function minutesInDay(entry, day) {
   const start = new Date(`${day}T00:00:00`);
   const end = new Date(start); end.setDate(end.getDate() + 1);
   return Math.max(0, Math.min(+new Date(entry.ended_at), +end) - Math.max(+new Date(entry.started_at), +start)) / 60000;
+}
+function intervalInDay(entry, day) {
+  if (!entry.ended_at) return null;
+  const dayStart = new Date(`${day}T00:00:00`).getTime();
+  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+  const start = Math.max(new Date(entry.started_at).getTime(), dayStart);
+  const end = Math.min(new Date(entry.ended_at).getTime(), +dayEnd);
+  return end > start ? {start, end} : null;
+}
+function renderDevicePie(card, device, entries, day) {
+  const raw = deviceUsageBreakdown(device, entries, day);
+  const total = raw.reduce((sum, item) => sum + item.minutes, 0);
+  if (!total) {
+    card.append(node('p', 'muted small device-chart-empty', 'No app time recorded for this day.'));
+    return;
+  }
+  const shown = [], small = [];
+  for (const item of raw) (item.minutes / total < 0.01 ? small : shown).push(item);
+  if (small.length) shown.push({label: 'Other', minutes: small.reduce((sum, item) => sum + item.minutes, 0), other: true});
+  shown.sort((a, b) => a.other ? 1 : b.other ? -1 : b.minutes - a.minutes);
+
+  let percent = 0;
+  const colors = shown.map((item, index) => item.other ? '#cfd7ca' : `hsl(${(index * 137.5 + 34) % 360} 48% 59%)`);
+  const stops = shown.map((item, index) => {
+    const from = percent;
+    percent += item.minutes / total * 100;
+    const to = index === shown.length - 1 ? 100 : percent;
+    return `${colors[index]} ${from.toFixed(3)}% ${to.toFixed(3)}%`;
+  });
+  const chart = node('div', 'device-chart');
+  const pie = node('div', 'device-pie');
+  pie.style.background = `conic-gradient(${stops.join(', ')})`;
+  pie.setAttribute('role', 'img');
+  pie.setAttribute('aria-label', `Tracked app time: ${shown.map(item => `${item.label}, ${(item.minutes / total * 100).toFixed(1)} percent, ${duration(item.minutes)}`).join('; ')}`);
+  const center = node('div', 'device-pie-center');
+  center.append(node('span', 'device-pie-total', duration(total)), node('span', 'device-pie-caption', 'tracked time'));
+  pie.append(center);
+  const legend = node('div', 'device-legend');
+  shown.forEach((item, index) => {
+    const row = node('div', 'device-legend-row');
+    const swatch = node('span', 'device-legend-swatch'); swatch.style.backgroundColor = colors[index];
+    const label = node('span', 'device-legend-name', item.label);
+    label.title = item.label;
+    row.append(swatch, label, node('span', 'device-legend-percent', `${(item.minutes / total * 100).toFixed(1)}%`),
+      node('span', 'device-legend-time', item.minutes < 0.5 ? '<1m' : duration(item.minutes)));
+    legend.append(row);
+  });
+  chart.append(pie, legend);
+  card.append(chart);
 }
 function renderEntries() {
   const container = $('#entries'); container.replaceChildren();
@@ -144,28 +238,12 @@ async function loadDay() {
     for (const kind of ['work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = duration(data.totals[`${kind}_minutes`]);
     $('#entry-count').textContent = `${data.entries.length} ${data.entries.length === 1 ? 'activity' : 'activities'} logged`;
     $('#day-label').textContent = selected.toLocaleDateString([], {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}).toUpperCase();
-    const apps = new Map(), sites = new Map();
-    for (const entry of data.entries.filter(e => e.kind === 'screen')) {
-      const destination = entry.source === 'windows-browser' ? sites : apps;
-      const label = destination === sites ? entry.label : displayAppName(entry.label);
-      destination.set(label, (destination.get(label) || 0) + minutesInDay(entry, value));
-    }
-    $('#screen-apps').replaceChildren();
-    if (!apps.size) $('#screen-apps').append(node('p', 'muted small', 'No screen time recorded for this day.'));
-    [...apps.entries()].sort((a,b) => b[1]-a[1]).slice(0,3).forEach(([label, minutes]) => {
-      const row = node('div', 'app-row'); row.append(node('span', '', label), node('span', '', duration(minutes))); $('#screen-apps').append(row);
-    });
-    $('#screen-sites').replaceChildren();
-    if (!sites.size) $('#screen-sites').append(node('p', 'muted small', 'No website activity recorded for this day.'));
-    [...sites.entries()].sort((a,b) => b[1]-a[1]).slice(0,3).forEach(([label, minutes]) => {
-      const row = node('div', 'app-row'); row.append(node('span', '', label), node('span', '', duration(minutes))); $('#screen-sites').append(row);
-    });
     renderEntries(); renderWeek(days, dates);
   } catch (error) {
     if (version !== loadId) return;
     currentEntries = []; renderEntries();
     for (const kind of ['water', 'work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = '—';
-    $('#screen-apps').replaceChildren(); $('#screen-sites').replaceChildren(); $('#week-chart').replaceChildren();
+    $('#week-chart').replaceChildren();
     $('#screen-unique').textContent = '';
     $('#entry-count').textContent = 'Could not load this day'; notify(error.message);
   }
@@ -258,21 +336,8 @@ function renderDevices(sync) {
     const card = node('article', 'device-card');
     card.append(node('span', 'device-type', device.platform === 'android' ? 'GOOGLE PIXEL / ANDROID' : 'WINDOWS PC'), node('h3', '', device.name), node('div', 'device-minutes', duration(total(device.id))));
     card.append(node('p', 'muted small', device.last_seen ? `Last synced ${new Date(device.last_seen).toLocaleString()}` : 'Waiting for the first sync'));
-    const deviceEntries = currentEntries.filter(e => e.kind === 'screen' && e.device_id === device.id);
-    const addBreakdown = (label, website) => {
-      const totals = new Map();
-      for (const entry of deviceEntries.filter(e => (e.source === 'windows-browser') === website)) {
-        const name = website ? entry.label : displayAppName(entry.label);
-        totals.set(name, (totals.get(name) || 0) + minutesInDay(entry, $('#selected-date').value));
-      }
-      if (!totals.size) return;
-      card.append(node('div', 'device-breakdown-title', label));
-      for (const [name, minutes] of [...totals.entries()].sort((a,b) => b[1]-a[1]).slice(0,3)) {
-        const row = node('div', 'device-breakdown-row'); row.append(node('span', '', name), node('span', '', duration(minutes))); card.append(row);
-      }
-    };
-    addBreakdown('Top apps', false);
-    addBreakdown('Top websites', true);
+    card.append(node('div', 'device-chart-heading', 'Apps and websites'));
+    renderDevicePie(card, device, currentEntries, $('#selected-date').value);
     const revoke = node('button', 'text-button', 'Revoke pairing');
     revoke.addEventListener('click', async () => {
       if (!confirm(`Revoke “${device.name}”? Its uploads will stop. Existing history will remain. Pause or uninstall its collector to stop local recording.`)) return;
