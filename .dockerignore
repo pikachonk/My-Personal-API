@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!server.py
+!device_sync.py
+!static/
+!static/**

@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+data/
+.venv/
+.env
+android/.tools/
+android/build/
+collectors/*.json
+*.jks
+release/
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+backups/
+# Device pairing files and environment secrets, wherever saved in the project.
+SimonSealsAPI-*.json
+.env.*
+!.env.example

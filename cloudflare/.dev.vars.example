@@ -1,0 +1,3 @@
+# Local development only. Copy to .dev.vars and choose a password.
+ADMIN_PASSWORD="replace-with-a-unique-password-at-least-16-characters"
+PUBLIC_ORIGIN="http://localhost:8787"
