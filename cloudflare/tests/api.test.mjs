@@ -46,6 +46,7 @@ test('dashboard, assets and API are protected; login cookie and logout', async (
   assert.equal((await call('/index.html', {signed: false})).status, 302);
   assert.equal((await call('/api/export', {signed: false})).status, 401);
   assert.equal((await call('/login', {signed: false})).status, 200);
+  assert.equal((await call('/magic.css', {signed: false})).status, 200);
   const page = await call('/'); assert.equal(page.status, 200); assert.match(page.body, /SimonSealsAPI/);
   assert.equal(page.headers.get('Cache-Control'), 'no-store');
   assert.equal((await call('/api/docs')).status, 200);

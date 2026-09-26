@@ -191,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
         if host not in hosts or (origin and origin != expected):
             self.reply(403, {"error": "Use the dashboard's configured address."})
             return False
-        if PUBLIC_ORIGIN and urlparse(self.path).path not in {"/login", "/login.js", "/style.css", "/api/login"}:
+        if PUBLIC_ORIGIN and urlparse(self.path).path not in {"/login", "/login.js", "/style.css", "/magic.css", "/api/login"}:
             cookie = SimpleCookie()
             try:
                 cookie.load(self.headers.get("Cookie", ""))
@@ -236,6 +236,7 @@ class Handler(BaseHTTPRequestHandler):
             assets = {"/": ("index.html", "text/html; charset=utf-8"),
                       "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/style.css": ("style.css", "text/css; charset=utf-8"),
+                      "/magic.css": ("magic.css", "text/css; charset=utf-8"),
                       "/login": ("login.html", "text/html; charset=utf-8"),
                       "/login.js": ("login.js", "text/javascript; charset=utf-8"),
                       "/api/docs": ("api.html", "text/html; charset=utf-8")}

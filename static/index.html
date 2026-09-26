@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#162c26"><title>SimonSealsAPI · Your daily picture</title>
-  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+  <meta name="theme-color" content="#0b1228"><title>SimonSealsAPI · Your daily picture</title>
+  <link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/magic.css"><script src="/app.js" defer></script>
 </head>
-<body>
+<body class="dashboard-page"><div class="ambient-sky" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></div>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="SimonSealsAPI home"><span class="brand-mark">S.</span>SimonSealsAPI</a>
     <div class="workspace"><span class="avatar">YOU</span><div>My personal space<small>One day at a time</small></div></div>
@@ -16,7 +16,7 @@
   <main>
     <header class="topbar"><span>My space <span class="breadcrumb">/</span> <strong>Overview</strong></span><div><span class="private-badge">● Local & personal</span><button id="sign-out" class="text-button" hidden>Sign out</button></div></header>
     <div class="content">
-      <section class="heading"><div><p class="eyebrow" id="day-label">YOUR DAILY PICTURE</p><h1>Make room for a good day.</h1><p class="muted">Your habits, your time, your life. All in one place.</p></div><button class="primary" id="add-entry"><span>＋</span> Log activity</button></section>
+      <section class="heading"><div><p class="eyebrow" id="day-label">YOUR DAILY PICTURE</p><h1>A little magic in every day.</h1><p class="muted">Your time and small moments, beautifully in motion.</p></div><button class="primary" id="add-entry"><span>＋</span> Log activity</button><div class="hero-orbit" aria-hidden="true"><span class="orbit-ring orbit-ring-one"></span><span class="orbit-ring orbit-ring-two"></span><span class="orbit-core">✦</span><span class="orbit-star orbit-star-one">✦</span><span class="orbit-star orbit-star-two">✧</span><span class="orbit-star orbit-star-three">✦</span></div></section>
       <section class="date-row" aria-label="Choose a day"><div class="date-controls"><button id="previous-day" class="icon-button" aria-label="Previous day">←</button><input type="date" id="selected-date" aria-label="Selected day"><button id="next-day" class="icon-button" aria-label="Next day">→</button><button id="today" class="text-button">Today</button></div><span class="muted small" id="entry-count">Loading your day…</span></section>
       <section class="stats" aria-label="Daily totals">
         <article class="stat water-card"><div class="stat-top"><span>Hydration</span><span class="stat-symbol">◒</span></div><div class="stat-value"><span id="water-total">—</span><small>ml</small></div><p>Every little sip counts.</p><div class="water-actions"><button data-water="250">＋ 250 ml</button><button data-water="500">＋ 500 ml</button></div></article>
