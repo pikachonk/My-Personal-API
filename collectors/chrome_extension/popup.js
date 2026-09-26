@@ -2,10 +2,13 @@ const $ = selector => document.querySelector(selector);
 const configKey = 'pairing';
 
 async function refresh() {
-  const data = await chrome.storage.local.get([configKey, 'trackingEnabled', 'trackingStatus']);
+  const data = await chrome.storage.local.get([configKey, 'trackingEnabled', 'trackingStatus', 'activeWebsiteSession']);
   const connected = !!data[configKey];
   const enabled = data.trackingEnabled !== false;
-  $('#status').textContent = connected ? (data.trackingStatus || 'Connected.') : 'Not connected.';
+  $('#status').textContent = !connected ? 'Not connected.' : !enabled ? 'Website tracking paused.' : data.trackingStatus?.startsWith('Tracking error; retrying:')
+    ? data.trackingStatus : data.activeWebsiteSession
+    ? `Recording ${data.activeWebsiteSession.domain}. Ongoing visits upload about every five minutes.`
+    : (data.trackingStatus || 'Connected. Waiting for an active website.');
   $('#toggle').disabled = !connected;
   $('#toggle').textContent = enabled ? 'Pause tracking' : 'Resume tracking';
   if (connected) $('#pairing').placeholder = `Connected to ${data[configKey].device_name || 'this Windows PC'}. Paste the same key again to reconnect.`;

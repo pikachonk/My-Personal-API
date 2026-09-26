@@ -4,7 +4,8 @@ const CONFIG_KEY = 'pairing';
 const ENABLED_KEY = 'trackingEnabled';
 const ALARM = 'sample-active-website';
 const MAX_GAP_MS = 120000;
-const MAX_SESSION_MS = 86400000;
+// Upload long-running visits in small completed slices so domains appear promptly.
+const MAX_SESSION_MS = 300000;
 const MIN_SESSION_MS = 5000;
 
 let operations = Promise.resolve();
@@ -12,7 +13,7 @@ let operations = Promise.resolve();
 function serial(task) {
   const next = operations.then(task, task);
   operations = next.catch(() => {});
-  return next.catch(error => setStatus(`Tracking paused after an error: ${error.message || 'unknown error'}`));
+  return next.catch(error => setStatus(`Tracking error; retrying: ${error.message || 'unknown error'}`));
 }
 
 async function setStatus(status) {

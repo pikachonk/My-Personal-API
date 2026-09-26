@@ -115,7 +115,7 @@ To disable future auto-start, delete **SimonSealsAPI Screen Time** from your Win
 
 ### Track active websites in Chrome
 
-The Chrome extension records the domain of the active tab on a paired Windows PC. It does not record page paths, search terms, page titles, or browsing history. Incognito tabs and non-web pages are excluded. The Chrome `tabs` permission can be described by Chrome as access to browsing history; the extension uses it to inspect the active tab URL and keeps only its domain.
+The Windows installer does not install the Chrome extension. Without the separate extension, the dashboard records `chrome.exe` app time but no website domains. The extension records the domain of the active tab on a paired Windows PC. It does not record page paths, search terms, page titles, or browsing history. Incognito tabs and non-web pages are excluded. The Chrome `tabs` permission can be described by Chrome as access to browsing history; the extension uses it to inspect the active tab URL and keeps only its domain.
 
 Use the original Windows pairing JSON for that PC. The dashboard cannot reveal an existing device key again; if you no longer have the file, create a new Windows pairing and update the Windows installer and Chrome extension to use that new key.
 
@@ -124,7 +124,7 @@ Use the original Windows pairing JSON for that PC. The dashboard cannot reveal a
 3. Click the SimonSealsAPI extension icon, paste the same Windows pairing JSON used by the Windows installer, and choose **Connect this PC**. Approve Chrome's request to connect to your SimonSealsAPI server.
 4. The extension starts tracking the active website in the focused Chrome window. Its popup shows connection status and lets you pause or resume website tracking.
 
-The extension keeps unsent website sessions in the Chrome profile and retries them. Tracking is sampled about once a minute and uses the same five-minute inactivity cutoff as the Windows collector. It starts after setup; it cannot import past browsing activity. The domain breakdown is part of Chrome's app time, so it does not add extra minutes to the screen-time total. The Windows collector and extension use the same pairing: revoking that Windows key stops uploads from both. To stop local recording, pause the extension and stop or disable the Windows collector too.
+The extension keeps unsent website sessions in the Chrome profile and retries them. Tracking is sampled about once a minute, uploads ongoing visits about every five minutes, and uses the same five-minute inactivity cutoff as the Windows collector. Switching domains or leaving Chrome also closes and uploads a visit. It starts after setup; it cannot import past browsing activity. The domain breakdown is part of Chrome's app time, so it does not add extra minutes to the screen-time total. The Windows collector and extension use the same pairing: revoking that Windows key stops uploads from both. To stop local recording, pause the extension and stop or disable the Windows collector too.
 
 ## 3. Pair both Google Pixel phones
 

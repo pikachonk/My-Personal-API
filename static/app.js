@@ -142,6 +142,13 @@ function pollWorkAi() {
 }
 function renderWorkRules() {
   const list = $('#work-rule-list'); list.replaceChildren();
+  const chromeUsed = currentEntries.some(entry => entry.kind === 'screen' && entry.source === 'windows-collector' && ['chrome.exe', 'google chrome'].includes(entry.label.toLowerCase()));
+  const websitesRecorded = currentEntries.some(entry => entry.kind === 'screen' && entry.source === 'windows-browser');
+  if (chromeUsed && !websitesRecorded) {
+    const help = node('p', 'muted small', 'Chrome app time is recorded, but no website domains have arrived for this day. Install and connect the separate Chrome extension using this PC\'s Windows pairing JSON. ');
+    const link = node('a', '', 'Chrome setup instructions ↗'); link.href = '/api/docs#browser';
+    help.append(link); list.append(help);
+  }
   const observed = new Map();
   for (const entry of currentEntries) {
     if (entry.kind !== 'screen') continue;
@@ -161,7 +168,7 @@ function renderWorkRules() {
     if (!observed.has(key)) observed.set(key, {type: 'website', label: guess.label, minutes: 0});
   }
   const items = [...observed.values()].sort((a, b) => b.minutes - a.minutes || a.label.localeCompare(b.label));
-  if (!items.length) { list.append(node('p', 'muted', 'No app or website activity yet for this day. Pair and sync a device first.')); return; }
+  if (!items.length) { list.append(node('p', 'muted', chromeUsed ? 'No classifiable apps or website domains for this day yet.' : 'No app or website activity yet for this day. Pair and sync a device first.')); return; }
   for (const item of items) {
     const row = node('div', 'work-rule-row');
     const name = node('div', 'work-rule-name');
@@ -450,6 +457,11 @@ function renderDevices(sync) {
     card.append(node('p', 'muted small', device.last_seen ? `Last synced ${new Date(device.last_seen).toLocaleString()}` : 'Waiting for the first sync'));
     card.append(node('div', 'device-chart-heading', 'Apps and websites'));
     renderDevicePie(card, device, currentEntries, $('#selected-date').value);
+    if (device.platform === 'windows' && currentEntries.some(entry => entry.device_id === device.id && entry.source === 'windows-collector' && ['chrome.exe', 'google chrome'].includes(entry.label.toLowerCase())) && !currentEntries.some(entry => entry.device_id === device.id && entry.source === 'windows-browser')) {
+      const help = node('p', 'muted small', 'No Chrome domains recorded for this day. The Windows app collector needs a separate Chrome extension for websites. ');
+      const link = node('a', '', 'Set it up ↗'); link.href = '/api/docs#browser';
+      help.append(link); card.append(help);
+    }
     const revoke = node('button', 'text-button', 'Revoke pairing');
     revoke.addEventListener('click', async () => {
       if (!confirm(`Revoke “${device.name}”? Its uploads will stop. Existing history will remain. Pause or uninstall its collector to stop local recording.`)) return;
