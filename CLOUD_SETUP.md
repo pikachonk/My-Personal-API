@@ -4,7 +4,7 @@ SimonSealsAPI now supports **Cloudflare Workers + D1** at **https://simonsealsap
 
 **Deployed September 23, 2026:** open https://simonsealsapi.dev and sign in. Your generated dashboard password is in [data/cloudflare-dashboard-password.txt](data/cloudflare-dashboard-password.txt) in this workspace. That file is restricted to your Windows account and excluded from release ZIPs and version control. Save the password in your password manager. It is separate from your Cloudflare login.
 
-The remote D1 database, password secret, Worker, and custom domain have been created. Live HTTPS checks passed for login/logout, manual activities, five temporary device pairings, a 200-event upload, retries, and revocation. Temporary test records were removed. Your physical devices still need pairing below. No Azure VM, Docker, SSH key, startup script, or server IP is required for this path.
+The remote D1 database, password secret, Worker, and custom domain have been created. Live HTTPS checks passed for login/logout, manual activities, five temporary device pairings, a 200-event upload, retries, and revocation. Temporary test records were removed. Your physical devices still need pairing below.
 
 The deployment steps below are retained for rebuilding or deploying from another computer. For your current installation, continue at **2. Pair three Windows PCs**. Do not recreate the database during normal updates.
 
@@ -70,7 +70,7 @@ npm run deploy
 
 This checks that the database ID and password secret are configured, builds the Worker, applies pending D1 migrations, then deploys the app and static dashboard. Accept the database migration and custom-domain prompts if shown for simonsealsapi-db and simonsealsapi.dev.
 
-The configuration already declares **simonsealsapi.dev as a Workers Custom Domain**. Cloudflare creates its DNS record and manages the HTTPS certificate. You do not need an A record pointing at a VM or a Cloudflare Tunnel. The alternative workers.dev and preview URLs are disabled. See [Cloudflare Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/).
+The configuration already declares **simonsealsapi.dev as a Workers Custom Domain**. Cloudflare creates its DNS record and manages the HTTPS certificate. The alternative workers.dev and preview URLs are disabled. See [Cloudflare Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/).
 
 If an existing DNS record or another application already occupies the root domain, inspect that record before accepting a replacement. Resolve only the conflicting record for simonsealsapi.dev; keep unrelated records such as email MX/TXT records. Do not enable a cache-everything rule for this app. API and authenticated dashboard responses use no-store.
 
@@ -166,7 +166,7 @@ Treat SQL backups as private: they contain activity, hashed device keys, and ses
 
 Code updates: run npm ci if dependencies changed, npm test, then npm run deploy. The same D1 database remains in place. To change the login password, rerun npm run cf -- secret put ADMIN_PASSWORD. Existing sessions immediately become invalid; device pairing keys are unaffected. Sessions otherwise expire after 12 hours and survive Worker restarts/deployments.
 
-Keep android/.tools/daybook-dev.jks if rebuilding the APK so Android accepts updates. Existing local Python/SQLite data is not automatically copied into D1; this cloud deployment starts empty. Do not upload data/daybook.db directly into D1 because its schema differs. The optional VM path remains documented in [VM_SETUP.md](VM_SETUP.md).
+Keep android/.tools/daybook-dev.jks if rebuilding the APK so Android accepts updates. Existing local Python/SQLite data is not automatically copied into D1; this cloud deployment starts empty. Do not upload data/daybook.db directly into D1 because its schema differs.
 
 ## Local Cloudflare testing
 

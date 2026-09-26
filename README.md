@@ -1,6 +1,6 @@
 # SimonSealsAPI
 
-Renamed from Daybook. Existing database filenames, `DAYBOOK_*` configuration keys, Docker service/volume identifiers, Windows data directories, and Android package/signing identity are retained so existing installations and saved data remain compatible.
+Renamed from Daybook. Existing database filenames, `DAYBOOK_*` configuration keys, Windows data directories, and Android package/signing identity are retained so existing installations and saved data remain compatible.
 
 A personal dashboard and API with automatic screen-time collection across three Windows PCs and two Google Pixel phones. Water, work, gym, sleep, and custom activities also remain available.
 
@@ -14,9 +14,9 @@ Each device needs a one-time installation and its own pairing file. After setup,
 
 **Start here: [cloud and device setup](CLOUD_SETUP.md).**
 
-The primary cloud deployment is now **Cloudflare Workers + D1**, live at **https://simonsealsapi.dev**. The JavaScript Worker in `cloudflare/` serves the existing dashboard and implements the same device upload protocol. The Python server remains available for local use and optional Docker hosting. Live login, upload, retry and revocation checks passed; physical-device installation and verification still need your PCs and Pixels. See [CLOUD_SETUP.md](CLOUD_SETUP.md) for your local password file and pairing instructions.
+The cloud deployment uses **Cloudflare Workers + D1**, live at **https://simonsealsapi.dev**. The JavaScript Worker in `cloudflare/` serves the dashboard and implements the device upload protocol. The Python server remains available for local preview and development. Live login, upload, retry and revocation checks passed; physical-device installation and verification still need your PCs and Pixels. See [CLOUD_SETUP.md](CLOUD_SETUP.md) for your local password file and pairing instructions.
 
-Release files in `release/` include `SimonSealsAPI-cloudflare.zip`, the optional Docker cloud ZIP, Windows installer ZIP, and `SimonSealsAPI.apk`. Follow [CLOUD_SETUP.md](CLOUD_SETUP.md) for Cloudflare; [VM_SETUP.md](VM_SETUP.md) preserves the optional Linux instructions.
+Release files in `release/` include `SimonSealsAPI-cloudflare.zip`, `SimonSealsAPI-windows.zip`, and `SimonSealsAPI.apk`. Follow [CLOUD_SETUP.md](CLOUD_SETUP.md) for cloud and device setup.
 
 ### Cloudflare development
 
@@ -73,4 +73,4 @@ The Android build requires a Windows JDK (Java 11+) and downloads checksum-verif
 - JSON export includes activity and device metadata, never device keys. SQLite and collector queues are not independently encrypted by SimonSealsAPI; device/server disk protection is managed by the operating system.
 - Back up the cloud database using the steps in `CLOUD_SETUP.md`. JSON import is not implemented.
 
-This is a single-user application. Cloudflare Free has request, CPU, database read/write and storage limits; monitor usage after connecting your devices. The optional Docker stack still needs a startup smoke test if you choose that deployment path.
+This is a single-user application. Cloudflare Free has request, CPU, database read/write and storage limits; monitor usage after connecting your devices.
