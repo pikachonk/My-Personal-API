@@ -341,7 +341,7 @@ async function route(request, env, ctx) {
     return new Response(null, {status: 204, headers: {...securityHeaders, ...extensionCors(origin)}});
   if (method === 'POST' && path === '/api/sync') return sync(request, env, ctx);
   if (method === 'POST' && path === '/api/login') return login(request, env);
-  const publicAsset = ['/login', '/login.js', '/style.css', '/magic.css'].includes(path) && ['GET', 'HEAD'].includes(method);
+  const publicAsset = ['/login', '/login.js', '/style.css', '/magic.css', '/favicon.svg'].includes(path) && ['GET', 'HEAD'].includes(method);
   if (!publicAsset && !await authorized(request, env)) {
     if (path.startsWith('/api/')) fail('Sign in to your dashboard.', 401);
     return new Response(null, {status: 302, headers: {...securityHeaders, Location: '/login'}});
@@ -413,7 +413,7 @@ async function route(request, env, ctx) {
       return json(path === '/api/day' ? {date: day, totals: summarize(entries, start, end, rules), entries} : {entries});
     }
   }
-  const assets = {'/': '/index.html', '/app.js': '/app.js', '/style.css': '/style.css', '/magic.css': '/magic.css', '/login': '/login.html', '/login.js': '/login.js', '/api/docs': '/api.html'};
+  const assets = {'/': '/index.html', '/app.js': '/app.js', '/style.css': '/style.css', '/magic.css': '/magic.css', '/favicon.svg': '/favicon.svg', '/login': '/login.html', '/login.js': '/login.js', '/api/docs': '/api.html'};
   if (['GET', 'HEAD'].includes(method) && assets[path]) {
     url.pathname = assets[path]; url.search = '';
     const result = await env.ASSETS.fetch(new Request(url, {method}));
