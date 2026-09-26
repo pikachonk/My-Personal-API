@@ -264,6 +264,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"status": "ok"})
             if parsed.path == "/api/devices":
                 return self.reply(200, {"devices": device_store().devices(), "sync": SYNC_INFO})
+            if parsed.path == "/api/work-ai":
+                return self.reply(200, {"available": False, "enabled": False, "suggestions": [],
+                                        "pending": 0, "used_today": 0, "daily_cap": 0, "last_error": ""})
             if parsed.path == "/api/work-rules":
                 with connect() as conn:
                     rules = [dict(row) for row in conn.execute("SELECT type,label,classification FROM work_rules ORDER BY type,label")]

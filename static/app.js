@@ -13,6 +13,7 @@ let currentEntries = [];
 let currentDevices = [];
 let pairingConfig = null;
 let workRules = [];
+let workAi = {available: false, enabled: false, suggestions: []};
 let loadId = 0;
 let toastTimer;
 const historyCache = new Map();
@@ -118,6 +119,27 @@ function intervalInDay(entry, day) {
   return end > start ? {start, end} : null;
 }
 const browserAppLabels = new Set(['chrome.exe', 'google chrome', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'com.android.chrome', 'com.microsoft.emmx', 'org.mozilla.firefox']);
+function renderWorkAiControls() {
+  $('#work-ai-controls').hidden = !workAi.available;
+  if (!workAi.available) return;
+  $('#work-ai-enabled').checked = workAi.enabled;
+  $('#work-ai-refresh').hidden = !workAi.enabled;
+  $('#work-ai-status').textContent = workAi.last_error || (workAi.enabled
+    ? `${workAi.pending ? `Reviewing ${workAi.pending} sites · ` : ''}${workAi.used_today}/${workAi.daily_cap} site requests today`
+    : 'AI is off. Existing guesses are ignored.');
+}
+async function refreshWorkAiView() {
+  workAi = await api('/api/work-ai');
+  renderWorkAiControls();
+  historyCache.clear();
+  await loadDay();
+  if ($('#work-dialog').open) renderWorkRules();
+}
+function pollWorkAi() {
+  for (const delay of [4000, 12000, 30000]) setTimeout(() => {
+    if ($('#work-dialog').open) refreshWorkAiView().catch(error => { $('#work-rule-error').textContent = error.message; });
+  }, delay);
+}
 function renderWorkRules() {
   const list = $('#work-rule-list'); list.replaceChildren();
   const observed = new Map();
@@ -134,6 +156,10 @@ function renderWorkRules() {
     const key = `${rule.type}:${rule.label}`;
     if (!observed.has(key)) observed.set(key, {...rule, minutes: 0});
   }
+  for (const guess of workAi.suggestions || []) {
+    const key = `website:${guess.label}`;
+    if (!observed.has(key)) observed.set(key, {type: 'website', label: guess.label, minutes: 0});
+  }
   const items = [...observed.values()].sort((a, b) => b.minutes - a.minutes || a.label.localeCompare(b.label));
   if (!items.length) { list.append(node('p', 'muted', 'No app or website activity yet for this day. Pair and sync a device first.')); return; }
   for (const item of items) {
@@ -141,6 +167,11 @@ function renderWorkRules() {
     const name = node('div', 'work-rule-name');
     name.append(node('strong', '', item.type === 'app' ? displayAppName(item.label) : item.label),
       node('small', '', `${item.type === 'app' ? 'App' : 'Website'} · ${duration(item.minutes)} on this day`));
+    const manual = workRules.find(rule => rule.type === item.type && rule.label === item.label);
+    const guess = item.type === 'website' ? workAi.suggestions?.find(s => s.label === item.label) : null;
+    if (guess && !manual && workAi.enabled)
+      name.append(node('small', 'work-ai-guess', `AI guess: ${guess.classification} · ${guess.reason || 'Based on the domain only'}`));
+    else if (guess && manual) name.append(node('small', '', 'Your choice overrides the AI guess.'));
     const select = node('select');
     select.setAttribute('aria-label', `Classify ${item.label}`);
     for (const [value, label] of [['unclassified', 'Unclassified'], ['work', 'Work'], ['personal', 'Personal']]) {
@@ -333,11 +364,33 @@ document.querySelectorAll('[data-kind]').forEach(button => button.addEventListen
 $('#manage-work').addEventListener('click', async () => {
   $('#work-rule-error').textContent = '';
   try {
-    workRules = (await api('/api/work-rules')).rules;
+    const [rules, ai] = await Promise.all([api('/api/work-rules'), api('/api/work-ai')]);
+    workRules = rules.rules; workAi = ai;
+    renderWorkAiControls();
     renderWorkRules(); $('#work-dialog').showModal();
   } catch (error) { notify(error.message); }
 });
 $('#close-work').addEventListener('click', () => $('#work-dialog').close());
+$('#work-ai-enabled').addEventListener('change', async () => {
+  const toggle = $('#work-ai-enabled'); toggle.disabled = true; $('#work-rule-error').textContent = '';
+  try {
+    workAi = await api('/api/work-ai', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:toggle.checked})});
+    renderWorkAiControls(); renderWorkRules(); historyCache.clear(); await loadDay();
+    if (workAi.enabled) pollWorkAi();
+  } catch (error) { toggle.checked = !toggle.checked; $('#work-rule-error').textContent = error.message; }
+  finally { toggle.disabled = false; }
+});
+$('#work-ai-refresh').addEventListener('click', async () => {
+  const button = $('#work-ai-refresh'); button.disabled = true; $('#work-rule-error').textContent = '';
+  try {
+    const result = await api('/api/work-ai/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (result.queued || result.pending) {
+      $('#work-ai-status').textContent = `Reviewing ${result.queued + result.pending} recorded sites…`;
+      pollWorkAi();
+    } else await refreshWorkAiView();
+  } catch (error) { $('#work-rule-error').textContent = error.message; }
+  finally { button.disabled = false; }
+});
 $('#entry-kind').addEventListener('change', syncFields);
 for (const id of ['close-dialog', 'cancel-dialog']) $(`#${id}`).addEventListener('click', () => $('#entry-dialog').close());
 $('#entry-form').addEventListener('submit', async event => {

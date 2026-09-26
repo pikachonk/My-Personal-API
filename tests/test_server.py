@@ -134,7 +134,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.request("GET", "/api/day?"+query)[0], 400)
 
     def test_assets_and_no_path_traversal(self):
-        for path in ["/", "/style.css", "/app.js", "/api/docs", "/api/health"]:
+        for path in ["/", "/style.css", "/app.js", "/api/docs", "/api/health", "/api/work-ai"]:
             self.assertEqual(self.request("GET", path)[0], 200)
         for path in ["/../server.py", "/data/daybook.db", "/does-not-exist"]:
             self.assertEqual(self.request("GET", path)[0], 404)

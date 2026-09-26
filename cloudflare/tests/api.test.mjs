@@ -2,6 +2,7 @@ import {test, before, after, beforeEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {Miniflare, convertV4MiniflareOptions} from 'miniflare';
+import {classifyDomain} from '../src/worker.js';
 
 const origin = 'https://simonsealsapi.dev';
 const password = 'test-password-only-not-for-deployment';
@@ -31,14 +32,15 @@ before(async () => {
       routerConfig: {has_user_worker: true}, assetConfig: {html_handling: 'none'}}}));
   db = await mf.getD1Database('DB');
   // execute() accepts a complete migration, including trigger BEGIN/END blocks.
-  for (const migration of ['0001_initial.sql', '0002_work_rules.sql']) {
+  for (const migration of ['0001_initial.sql', '0002_work_rules.sql', '0003_work_ai.sql']) {
     const sql = await readFile(`migrations/${migration}`, 'utf8');
     await db.prepare(sql).run();
   }
 });
 after(async () => { await mf?.dispose(); });
 beforeEach(async () => {
-  await db.batch(['entries', 'sync_receipts', 'devices', 'sessions', 'login_limit', 'work_rules'].map(t => db.prepare(`DELETE FROM ${t}`)));
+  await db.batch(['entries', 'sync_receipts', 'devices', 'sessions', 'login_limit', 'work_rules', 'work_ai_suggestions', 'work_ai_quota'].map(t => db.prepare(`DELETE FROM ${t}`)));
+  await db.prepare("UPDATE work_ai_settings SET enabled=0,last_error='' WHERE id=1").run();
   cookie = null;
   const r = await call('/api/login', {method: 'POST', signed: false, data: {password}});
   assert.equal(r.status, 200, JSON.stringify(r.body)); cookie = r.headers.get('Set-Cookie').split(';')[0];
@@ -143,6 +145,46 @@ test('approved apps and sites become work without double-counting browsers, devi
   assert.equal(totals.work_minutes, 120);
   await call('/api/work-rules', {method:'PUT', data:{type:'app', label:'code.exe', classification:'unclassified'}});
   assert.equal((await call(dayPath)).body.totals.work_minutes, 45);
+});
+test('AI work suggestions require opt-in and yield to manual site rules', async () => {
+  const pc = await pair('PC');
+  await upload(pc, [event('chrome'), event('site', {type:'website', app:'project.example',
+    started_at:'2026-09-20T10:15:00Z', ended_at:'2026-09-20T10:45:00Z'})]);
+  const dayPath = '/api/day?date=2026-09-20';
+  assert.equal((await call('/api/work-ai', {signed:false})).status, 401);
+  assert.equal((await call('/api/work-ai')).body.enabled, false);
+  assert.equal((await call('/api/work-ai', {method:'PUT', data:{enabled:true}})).status, 503);
+  await db.prepare("INSERT INTO work_ai_suggestions(label,classification,reason,created_at) VALUES('project.example','work','Project tool','2026-09-20T00:00:00Z')").run();
+  assert.equal((await call(dayPath)).body.totals.work_minutes, 0);
+  await db.prepare('UPDATE work_ai_settings SET enabled=1 WHERE id=1').run();
+  assert.equal((await call(dayPath)).body.totals.work_minutes, 30);
+  await call('/api/work-rules', {method:'PUT', data:{type:'website', label:'project.example', classification:'personal'}});
+  assert.equal((await call(dayPath)).body.totals.work_minutes, 0);
+  await db.prepare('UPDATE work_ai_settings SET enabled=0 WHERE id=1').run();
+  assert.equal((await call(dayPath)).body.totals.work_minutes, 0);
+});
+test('AI requests are cached, capped and skip sites the owner classified', async () => {
+  let calls = 0;
+  const fake = {DB: db, AI: {run: async (_model, request) => {
+    calls++; assert.equal(request.messages.at(-1).content, 'project.example');
+    return {response:'{"classification":"work","reason":"Project tool"}'};
+  }}};
+  assert.equal(await classifyDomain(fake, 'project.example'), null);
+  assert.equal(calls, 0);
+  await db.prepare('UPDATE work_ai_settings SET enabled=1 WHERE id=1').run();
+  assert.equal((await classifyDomain(fake, 'PROJECT.EXAMPLE')).classification, 'work');
+  assert.equal(await classifyDomain(fake, 'project.example'), null);
+  assert.equal(calls, 1);
+  assert.equal((await db.prepare("SELECT classification FROM work_ai_suggestions WHERE label='project.example'").first()).classification, 'work');
+  fake.AI.run = async () => ({response: 'not valid JSON'});
+  assert.equal((await classifyDomain(fake, 'ambiguous.example')).classification, 'unsure');
+  await db.prepare("INSERT INTO work_rules(type,label,classification) VALUES('website','manual.example','personal')").run();
+  assert.equal(await classifyDomain(fake, 'manual.example'), null);
+  assert.equal(calls, 1);
+  await db.prepare('UPDATE work_ai_quota SET used=100').run();
+  assert.equal(await classifyDomain(fake, 'later.example'), null);
+  assert.equal(calls, 1);
+  assert.equal(await db.prepare("SELECT classification FROM work_ai_suggestions WHERE label='later.example'").first(), null);
 });
 test('manual activities and timestamp validation preserve fractional seconds', async () => {
   const water = await call('/api/entries', {method: 'POST', data: {kind: 'water', value: 250, started_at: '2026-09-20T10:00:00.123456Z'}});

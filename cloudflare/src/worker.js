@@ -132,7 +132,7 @@ async function pair(request, env) {
   return json({device_id: id, device_name: name, platform: data.platform, token,
     server_url: env.PUBLIC_ORIGIN, certificate_sha256: ''}, 201);
 }
-async function sync(request, env) {
+async function sync(request, env, ctx) {
   const auth = request.headers.get('Authorization') || '';
   if (!auth.startsWith('Bearer ') || auth.length > 207) fail('Device key invalid or revoked. Pair the device again.', 401);
   const device = await env.DB.prepare('SELECT id,platform FROM devices WHERE token_hash=? AND revoked=0').bind(await hash(auth.slice(7))).first();
@@ -177,6 +177,8 @@ async function sync(request, env) {
       ON CONFLICT(device_id,event_id) DO UPDATE SET digest=excluded.digest WHERE sync_receipts.digest!=excluded.digest`)
       .bind(device.id, payload),
   ]);
+  const domains = [...unique.values()].filter(item => item.source === 'windows-browser').map(item => item.label);
+  if (domains.length && ctx?.waitUntil) ctx.waitUntil(classifyDomains(env, domains).catch(() => {}));
   return json({accepted: data.events.length, inserted: result[1].meta.changes, server_time: nowISO()}, 200, extensionCors(request.headers.get('Origin')));
 }
 function dayBounds(query) {
@@ -194,6 +196,8 @@ function dayBounds(query) {
 }
 function iso(ms) { return new Date(ms).toISOString().replace('Z', '000Z'); }
 const browserApps = new Set(['chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'com.android.chrome', 'com.microsoft.emmx', 'org.mozilla.firefox']);
+const aiModel = '@cf/meta/llama-3.1-8b-instruct-fp8';
+const aiDailyCap = 100;
 function workRule(data) {
   const type = text(data, 'type', '', 16);
   const label = text(data, 'label', '', type === 'website' ? 253 : 200).toLowerCase();
@@ -202,6 +206,77 @@ function workRule(data) {
   if (type === 'website' && !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/.test(label)) fail('Enter a valid website domain.');
   if (type === 'app' && browserApps.has(label)) fail('Classify browser website domains instead of the entire browser.');
   return {type, label, classification};
+}
+function parseAiGuess(response) {
+  try {
+    const raw = typeof response?.response === 'string' ? response.response : '';
+    const match = raw.match(/\{[\s\S]*\}/);
+    const answer = JSON.parse(match?.[0] || '');
+    if (!['work', 'personal', 'unsure'].includes(answer.classification)) throw new Error('Invalid classification');
+    return {classification: answer.classification,
+      reason: typeof answer.reason === 'string' ? answer.reason.replace(/\s+/g, ' ').slice(0, 140) : ''};
+  } catch { return {classification: 'unsure', reason: 'The AI could not make a reliable guess.'}; }
+}
+export async function classifyDomain(env, domain) {
+  domain = workRule({type: 'website', label: domain, classification: 'work'}).label;
+  if (!env.AI || !(await env.DB.prepare('SELECT enabled FROM work_ai_settings WHERE id=1').first())?.enabled) return null;
+  const now = nowISO();
+  await env.DB.prepare("DELETE FROM work_ai_suggestions WHERE label=? AND classification='pending' AND created_at<?")
+    .bind(domain, iso(Date.now() - 600000)).run();
+  const claim = await env.DB.prepare(`INSERT INTO work_ai_suggestions(label,classification,reason,created_at)
+    SELECT ?,'pending','',? WHERE NOT EXISTS
+      (SELECT 1 FROM work_rules WHERE type='website' AND label=?)
+    ON CONFLICT(label) DO NOTHING`).bind(domain, now, domain).run();
+  if (!claim.meta.changes) return null;
+  const day = new Date().toISOString().slice(0, 10);
+  const quota = await env.DB.prepare(`INSERT INTO work_ai_quota(day,used) VALUES(?,1)
+    ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<${aiDailyCap} RETURNING used`).bind(day).first();
+  if (!quota) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM work_ai_suggestions WHERE label=? AND classification='pending'").bind(domain),
+      env.DB.prepare("UPDATE work_ai_settings SET last_error='Daily AI request cap reached; try again after midnight UTC.' WHERE id=1"),
+    ]);
+    return null;
+  }
+  try {
+    const result = await env.AI.run(aiModel, {messages: [
+      {role: 'system', content: 'Classify a website DOMAIN for a personal work-time tracker. Guess work only for clearly work-specific tools, personal only for clearly leisure-oriented sites. General search, email, chat, social, video, news, and mixed-use sites are unsure. A domain cannot reveal what the person did on a page. Return only JSON: {"classification":"work|personal|unsure","reason":"brief reason"}.'},
+      {role: 'user', content: domain},
+    ], max_tokens: 80, temperature: 0});
+    const guess = parseAiGuess(result);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE work_ai_suggestions SET classification=?,reason=?,created_at=? WHERE label=? AND classification='pending'")
+        .bind(guess.classification, guess.reason, nowISO(), domain),
+      env.DB.prepare("UPDATE work_ai_settings SET last_error='' WHERE id=1"),
+    ]);
+    return guess;
+  } catch {
+    // A failed model request must never break device sync or turn into a work guess.
+    await env.DB.prepare("UPDATE work_ai_settings SET last_error='AI is temporarily unavailable. Try again later.' WHERE id=1").run();
+    return null;
+  }
+}
+async function classifyDomains(env, domains) {
+  if (!env.AI || !(await env.DB.prepare('SELECT enabled FROM work_ai_settings WHERE id=1').first())?.enabled) return;
+  await Promise.allSettled([...new Set(domains)].slice(0, 8).map(domain => classifyDomain(env, domain)));
+}
+async function recentUnclassifiedDomains(env) {
+  await env.DB.prepare("DELETE FROM work_ai_suggestions WHERE classification='pending' AND created_at<?")
+    .bind(iso(Date.now() - 600000)).run();
+  const rows = (await env.DB.prepare(`SELECT e.label FROM entries e
+    LEFT JOIN work_ai_suggestions s ON s.label=e.label
+    LEFT JOIN work_rules r ON r.type='website' AND r.label=e.label
+    WHERE e.source='windows-browser' AND s.label IS NULL AND r.label IS NULL
+    GROUP BY e.label ORDER BY MAX(e.started_at) DESC LIMIT 8`).all()).results;
+  return rows.map(row => row.label);
+}
+async function workAiState(env) {
+  const setting = await env.DB.prepare('SELECT enabled,last_error FROM work_ai_settings WHERE id=1').first();
+  const suggestions = (await env.DB.prepare("SELECT label,classification,reason FROM work_ai_suggestions WHERE classification!='pending' ORDER BY label LIMIT 1000").all()).results;
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM work_ai_suggestions WHERE classification='pending'").first();
+  const quota = await env.DB.prepare('SELECT used FROM work_ai_quota WHERE day=?').bind(new Date().toISOString().slice(0, 10)).first();
+  return {available: !!env.AI, enabled: !!setting?.enabled, last_error: setting?.last_error || '',
+    suggestions, pending: pending?.count || 0, used_today: quota?.used || 0, daily_cap: aiDailyCap};
 }
 function unionMs(intervals) {
   intervals.sort((a, b) => a[0] - b[0]);
@@ -255,7 +330,7 @@ async function exportPage(url, env) {
   const rules = (await env.DB.prepare('SELECT type,label,classification FROM work_rules ORDER BY type,label').all()).results;
   return json({version: 2, exported_at: nowISO(), entries: page.map(({export_row, ...e}) => e), devices: await devices(env), work_rules: rules, next_cursor: cursor});
 }
-async function route(request, env) {
+async function route(request, env, ctx) {
   if (!env.ADMIN_PASSWORD || env.ADMIN_PASSWORD.length < 16) fail('Set the ADMIN_PASSWORD Worker secret before using the dashboard.', 503);
   const url = new URL(request.url), path = url.pathname, method = request.method;
   const origin = request.headers.get('Origin') || '';
@@ -264,7 +339,7 @@ async function route(request, env) {
       (origin && origin !== env.PUBLIC_ORIGIN && !browserSync)) fail("Use the dashboard's configured address.", 403);
   if (method === 'OPTIONS' && path === '/api/sync' && browserSync)
     return new Response(null, {status: 204, headers: {...securityHeaders, ...extensionCors(origin)}});
-  if (method === 'POST' && path === '/api/sync') return sync(request, env);
+  if (method === 'POST' && path === '/api/sync') return sync(request, env, ctx);
   if (method === 'POST' && path === '/api/login') return login(request, env);
   const publicAsset = ['/login', '/login.js', '/style.css', '/magic.css'].includes(path) && ['GET', 'HEAD'].includes(method);
   if (!publicAsset && !await authorized(request, env)) {
@@ -277,6 +352,24 @@ async function route(request, env) {
     return json({signed_out: true}, 200, {'Set-Cookie': `${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});
   }
   if (method === 'POST' && path === '/api/devices') return pair(request, env);
+  if (method === 'PUT' && path === '/api/work-ai') {
+    const data = await readBody(request);
+    if (typeof data.enabled !== 'boolean') fail('enabled must be true or false.');
+    if (data.enabled && !env.AI) fail('AI suggestions are unavailable on this server.', 503);
+    await env.DB.prepare('UPDATE work_ai_settings SET enabled=?,last_error=? WHERE id=1')
+      .bind(data.enabled ? 1 : 0, '').run();
+    if (data.enabled && ctx?.waitUntil) ctx.waitUntil(recentUnclassifiedDomains(env)
+      .then(domains => classifyDomains(env, domains)).catch(() => {}));
+    return json(await workAiState(env));
+  }
+  if (method === 'POST' && path === '/api/work-ai/refresh') {
+    await readBody(request);
+    if (!(await env.DB.prepare('SELECT enabled FROM work_ai_settings WHERE id=1').first())?.enabled) fail('Turn on AI suggestions first.', 409);
+    const domains = await recentUnclassifiedDomains(env);
+    if (ctx?.waitUntil && domains.length) ctx.waitUntil(classifyDomains(env, domains).catch(() => {}));
+    const pending = await env.DB.prepare("SELECT COUNT(*) AS count FROM work_ai_suggestions WHERE classification='pending'").first();
+    return json({queued: domains.length, pending: pending?.count || 0});
+  }
   if (method === 'PUT' && path === '/api/work-rules') {
     const rule = workRule(object(await readBody(request)));
     if (rule.classification === 'unclassified') await env.DB.prepare('DELETE FROM work_rules WHERE type=? AND label=?').bind(rule.type, rule.label).run();
@@ -296,6 +389,7 @@ async function route(request, env) {
   if (method === 'GET') {
     if (path === '/api/health') { await env.DB.prepare('SELECT 1 FROM devices LIMIT 1').first(); return json({status: 'ok'}); }
     if (path === '/api/devices') return json({devices: await devices(env), sync: {enabled: true, cloud: true, url: env.PUBLIC_ORIGIN, certificate_sha256: ''}});
+    if (path === '/api/work-ai') return json(await workAiState(env));
     if (path === '/api/work-rules') return json({rules: (await env.DB.prepare('SELECT type,label,classification FROM work_rules ORDER BY type,label').all()).results});
     if (path === '/api/export') return exportPage(url, env);
     if (path === '/api/day' || path === '/api/entries') {
@@ -309,6 +403,13 @@ async function route(request, env) {
       ) SELECT e.*,d.name AS device_name FROM daily e LEFT JOIN devices d ON e.device_id=d.id ORDER BY e.started_at DESC`)
         .bind(iso(start), iso(end), iso(start), iso(start + 7 * 86400000), iso(start)).all()).results;
       const rules = path === '/api/day' ? (await env.DB.prepare('SELECT type,label,classification FROM work_rules').all()).results : [];
+      const websites = [...new Set(entries.filter(e => e.source === 'windows-browser').map(e => e.label.toLowerCase()))];
+      if (path === '/api/day' && websites.length && (await env.DB.prepare('SELECT enabled FROM work_ai_settings WHERE id=1').first())?.enabled) {
+        const suggestions = (await env.DB.prepare("SELECT label,classification FROM work_ai_suggestions WHERE label IN (SELECT value FROM json_each(?)) AND classification IN ('work','personal')")
+          .bind(JSON.stringify(websites)).all()).results;
+        const manual = new Set(rules.filter(r => r.type === 'website').map(r => r.label));
+        rules.push(...suggestions.filter(s => !manual.has(s.label)).map(s => ({type: 'website', ...s})));
+      }
       return json(path === '/api/day' ? {date: day, totals: summarize(entries, start, end, rules), entries} : {entries});
     }
   }
@@ -323,8 +424,8 @@ async function route(request, env) {
   return json({error: 'Not found.'}, 404);
 }
 export default {
-  async fetch(request, env) {
-    try { return await route(request, env); }
+  async fetch(request, env, ctx) {
+    try { return await route(request, env, ctx); }
     catch (error) {
       const cors = new URL(request.url).pathname === '/api/sync' ? extensionCors(request.headers.get('Origin')) : {};
       if (error instanceof HttpError) return json({error: error.message}, error.status, cors);
