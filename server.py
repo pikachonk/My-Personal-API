@@ -48,6 +48,11 @@ def initialize():
             started_at TEXT NOT NULL, ended_at TEXT, value REAL, unit TEXT NOT NULL,
             notes TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL)""")
         conn.execute("CREATE INDEX IF NOT EXISTS entries_start ON entries(started_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS work_rules (
+            type TEXT NOT NULL CHECK(type IN ('app', 'website')),
+            label TEXT NOT NULL,
+            classification TEXT NOT NULL CHECK(classification IN ('work', 'personal')),
+            PRIMARY KEY(type, label))""")
     device_store().initialize()
 
 
@@ -132,18 +137,61 @@ def entries_for_day(start, end):
             "ORDER BY started_at DESC", (end.isoformat(), start.isoformat(), start.isoformat()))]
 
 
-def summarize(entries, start, end):
-    totals = dict(water_ml=0, work_minutes=0, gym_minutes=0, sleep_minutes=0, screen_minutes=0)
+BROWSER_APPS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
+                "com.android.chrome", "com.microsoft.emmx", "org.mozilla.firefox"}
+
+
+def validate_work_rule(data):
+    if not isinstance(data, dict):
+        raise ValueError("Send a JSON object.")
+    rule_type = short_text(data, "type", limit=16)
+    label = short_text(data, "label", limit=253 if rule_type == "website" else 200).lower()
+    classification = short_text(data, "classification", limit=16)
+    if rule_type not in {"app", "website"} or not label or classification not in {"work", "personal", "unclassified"}:
+        raise ValueError("Choose an app or website and a classification.")
+    if rule_type == "website":
+        import re
+        if not re.fullmatch(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*", label):
+            raise ValueError("Enter a valid website domain.")
+    if rule_type == "app" and label in BROWSER_APPS:
+        raise ValueError("Classify browser website domains instead of the entire browser.")
+    return {"type": rule_type, "label": label, "classification": classification}
+
+
+def summarize(entries, start, end, rules=()):
+    totals = dict(water_ml=0, work_minutes=0, work_auto_minutes=0, work_manual_minutes=0,
+                  gym_minutes=0, sleep_minutes=0, screen_minutes=0)
+    manual_work, auto_work, screen_intervals, chrome, sites = [], [], [], {}, []
+    by_rule = {(rule["type"], rule["label"]): rule["classification"] for rule in rules}
     for entry in entries:
         if entry["kind"] == "water":
             totals["water_ml"] += entry["value"]
         elif entry["kind"] in {"work", "gym", "sleep", "screen"}:
-            seconds = (min(timestamp(entry["ended_at"]), end) -
-                       max(timestamp(entry["started_at"]), start)).total_seconds()
-            totals[entry["kind"] + "_minutes"] += max(0, seconds) / 60
-    totals["screen_unique_minutes"] = union_minutes([
-        (max(timestamp(e["started_at"]), start), min(timestamp(e["ended_at"]), end))
-        for e in entries if e["kind"] == "screen"])
+            interval = (max(timestamp(entry["started_at"]), start), min(timestamp(entry["ended_at"]), end))
+            if interval[1] <= interval[0]:
+                continue
+            if entry["kind"] == "work":
+                manual_work.append(interval)
+            elif entry["kind"] != "screen" or entry["source"] != "windows-browser":
+                totals[entry["kind"] + "_minutes"] += (interval[1] - interval[0]).total_seconds() / 60
+            if entry["kind"] == "screen" and entry["source"] != "windows-browser":
+                screen_intervals.append(interval)
+                label = entry["label"].lower()
+                if label in {"chrome.exe", "google chrome"}:
+                    chrome.setdefault(entry.get("device_id"), []).append(interval)
+                elif label not in BROWSER_APPS and by_rule.get(("app", label)) == "work":
+                    auto_work.append(interval)
+            elif entry["kind"] == "screen" and entry["source"] == "windows-browser" and by_rule.get(("website", entry["label"].lower())) == "work":
+                sites.append((entry.get("device_id"), interval))
+    for device_id, site in sites:
+        for browser in chrome.get(device_id, []):
+            overlap = (max(site[0], browser[0]), min(site[1], browser[1]))
+            if overlap[1] > overlap[0]:
+                auto_work.append(overlap)
+    totals["screen_unique_minutes"] = union_minutes(screen_intervals)
+    totals["work_auto_minutes"] = union_minutes(auto_work)
+    totals["work_manual_minutes"] = union_minutes(manual_work)
+    totals["work_minutes"] = union_minutes(auto_work + manual_work)
     return {key: round(value, 2) for key, value in totals.items()}
 
 
@@ -216,10 +264,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"status": "ok"})
             if parsed.path == "/api/devices":
                 return self.reply(200, {"devices": device_store().devices(), "sync": SYNC_INFO})
+            if parsed.path == "/api/work-rules":
+                with connect() as conn:
+                    rules = [dict(row) for row in conn.execute("SELECT type,label,classification FROM work_rules ORDER BY type,label")]
+                return self.reply(200, {"rules": rules})
             if parsed.path == "/api/export":
                 with connect() as conn:
                     entries = [dict(row) for row in conn.execute("SELECT * FROM entries ORDER BY started_at")]
-                return self.reply(200, {"version": 2, "exported_at": datetime.now(timezone.utc).isoformat(), "entries": entries, "devices": device_store().devices()})
+                    rules = [dict(row) for row in conn.execute("SELECT type,label,classification FROM work_rules ORDER BY type,label")]
+                return self.reply(200, {"version": 2, "exported_at": datetime.now(timezone.utc).isoformat(), "entries": entries, "devices": device_store().devices(), "work_rules": rules})
             if parsed.path in {"/api/day", "/api/entries"}:
                 day = query.get("date", [date.today().isoformat()])[0]
                 start, end = day_bounds(day, query.get("offset", ["0"])[0])
@@ -232,7 +285,9 @@ class Handler(BaseHTTPRequestHandler):
                 entries = entries_for_day(start, end)
                 if parsed.path == "/api/entries":
                     return self.reply(200, {"entries": entries})
-                return self.reply(200, {"date": day, "totals": summarize(entries, start, end), "entries": entries})
+                with connect() as conn:
+                    rules = [dict(row) for row in conn.execute("SELECT type,label,classification FROM work_rules")]
+                return self.reply(200, {"date": day, "totals": summarize(entries, start, end, rules), "entries": entries})
             assets = {"/": ("index.html", "text/html; charset=utf-8"),
                       "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/style.css": ("style.css", "text/css; charset=utf-8"),
@@ -300,6 +355,32 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": str(error)})
         except (sqlite3.Error, OSError):
             self.reply(503, {"error": "Could not save the entry. Please try again."})
+
+    def do_PUT(self):
+        if not self.allowed():
+            return
+        if urlparse(self.path).path != "/api/work-rules":
+            return self.reply(404, {"error": "Not found."})
+        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+            return self.reply(415, {"error": "Send Content-Type: application/json."})
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 16384:
+                raise ValueError("Request body must be between 1 and 16,384 bytes.")
+            self.connection.settimeout(10)
+            data = json.loads(self.rfile.read(size))
+            rule = validate_work_rule(data)
+            with connect() as conn:
+                if rule["classification"] == "unclassified":
+                    conn.execute("DELETE FROM work_rules WHERE type=? AND label=?", (rule["type"], rule["label"]))
+                else:
+                    conn.execute("INSERT INTO work_rules(type,label,classification) VALUES(:type,:label,:classification) "
+                                 "ON CONFLICT(type,label) DO UPDATE SET classification=excluded.classification", rule)
+            return self.reply(200, rule)
+        except (ValueError, UnicodeError, json.JSONDecodeError) as error:
+            return self.reply(400, {"error": str(error)})
+        except (sqlite3.Error, OSError):
+            return self.reply(503, {"error": "Could not save the work rule. Please try again."})
 
     def do_DELETE(self):
         if not self.allowed():

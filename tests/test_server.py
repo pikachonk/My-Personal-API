@@ -31,6 +31,7 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         with server.connect() as conn:
             conn.execute("DELETE FROM entries")
+            conn.execute("DELETE FROM work_rules")
 
     def request(self, method, path, body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.http.server_port, timeout=5)
@@ -97,6 +98,26 @@ class ApiTests(unittest.TestCase):
         totals = self.request("GET", "/api/day?date=2026-09-22")[1]["totals"]
         for kind in ["work", "gym", "screen", "sleep"]:
             self.assertEqual(totals[kind + "_minutes"], 90)
+
+    def test_work_rules_count_selected_screen_time_and_overlap_once(self):
+        for label, source, start, end in [
+            ("code.exe", "windows-collector", "10:00", "11:00"),
+            ("chrome.exe", "windows-collector", "11:00", "12:00"),
+            ("example.com", "windows-browser", "11:15", "11:45"),
+        ]:
+            self.assertEqual(self.request("POST", "/api/entries", {
+                "kind": "screen", "label": label, "source": source,
+                "started_at": f"2026-09-22T{start}:00Z", "ended_at": f"2026-09-22T{end}:00Z"})[0], 201)
+        path = "/api/day?date=2026-09-22"
+        self.assertEqual(self.request("GET", path)[1]["totals"]["work_minutes"], 0)
+        self.assertEqual(self.request("PUT", "/api/work-rules", {"type":"app", "label":"chrome.exe", "classification":"work"})[0], 400)
+        for rule in [{"type":"app", "label":"CODE.EXE", "classification":"work"},
+                     {"type":"website", "label":"example.com", "classification":"work"}]:
+            self.assertEqual(self.request("PUT", "/api/work-rules", rule)[0], 200)
+        self.assertEqual(len(self.request("GET", "/api/work-rules")[1]["rules"]), 2)
+        self.assertEqual(self.request("GET", path)[1]["totals"]["work_auto_minutes"], 90)
+        self.request("POST", "/api/entries", {"kind":"work", "started_at":"2026-09-22T11:30:00Z", "ended_at":"2026-09-22T12:00:00Z"})
+        self.assertEqual(self.request("GET", path)[1]["totals"]["work_minutes"], 105)
 
     def test_persistence_after_initialize(self):
         self.request("POST", "/api/entries", self.water())

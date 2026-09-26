@@ -150,6 +150,8 @@ The APK has been compiled and signature-verified, and the foreground-session sta
 
 Every device card shows its daily app total and actual last successful upload. A paired device with no uploads is shown as waiting, not connected. The main screen-time number adds app time across devices. The line underneath merges overlapping app intervals, so 30 minutes using a phone while on a PC counts as 30 elapsed minutes and 60 device-minutes. App and website breakdowns are shown by device in the dashboard and journal. Website time is a detail within Windows Chrome time and is not counted twice.
 
+To estimate work time automatically, open **Choose work apps & sites** on the Work card. Classify observed apps or website domains as **Work** or **Personal**; everything else remains unclassified. Start with dedicated work tools. Treat mixed-use email, chat, and browsers conservatively. The dashboard recalculates past days when you change a rule. Work website time needs the Chrome extension and is clipped to Chrome's foreground time; browser apps themselves cannot be marked Work. Overlapping work across devices and manually logged sessions counts once in the Work total.
+
 ## Backups and updates
 
 The dashboard's **Export** button downloads readable JSON with all activity and device metadata, excluding credentials. Cloudflare exports are fetched in pages of 500 records; API clients must follow next_cursor via /api/export?cursor=... until it is null. The browser combines pages into one file. Concurrent additions/deletions can affect this export; use database backup/recovery for a consistent restore. JSON import is not implemented.

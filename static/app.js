@@ -12,6 +12,7 @@ const knownApps = {
 let currentEntries = [];
 let currentDevices = [];
 let pairingConfig = null;
+let workRules = [];
 let loadId = 0;
 let toastTimer;
 const historyCache = new Map();
@@ -115,6 +116,50 @@ function intervalInDay(entry, day) {
   const start = Math.max(new Date(entry.started_at).getTime(), dayStart);
   const end = Math.min(new Date(entry.ended_at).getTime(), +dayEnd);
   return end > start ? {start, end} : null;
+}
+const browserAppLabels = new Set(['chrome.exe', 'google chrome', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'com.android.chrome', 'com.microsoft.emmx', 'org.mozilla.firefox']);
+function renderWorkRules() {
+  const list = $('#work-rule-list'); list.replaceChildren();
+  const observed = new Map();
+  for (const entry of currentEntries) {
+    if (entry.kind !== 'screen') continue;
+    const type = entry.source === 'windows-browser' ? 'website' : 'app';
+    const label = entry.label.toLowerCase();
+    if (type === 'app' && browserAppLabels.has(label)) continue;
+    const key = `${type}:${label}`;
+    if (!observed.has(key)) observed.set(key, {type, label, minutes: 0});
+    observed.get(key).minutes += minutesInDay(entry, $('#selected-date').value);
+  }
+  for (const rule of workRules) {
+    const key = `${rule.type}:${rule.label}`;
+    if (!observed.has(key)) observed.set(key, {...rule, minutes: 0});
+  }
+  const items = [...observed.values()].sort((a, b) => b.minutes - a.minutes || a.label.localeCompare(b.label));
+  if (!items.length) { list.append(node('p', 'muted', 'No app or website activity yet for this day. Pair and sync a device first.')); return; }
+  for (const item of items) {
+    const row = node('div', 'work-rule-row');
+    const name = node('div', 'work-rule-name');
+    name.append(node('strong', '', item.type === 'app' ? displayAppName(item.label) : item.label),
+      node('small', '', `${item.type === 'app' ? 'App' : 'Website'} · ${duration(item.minutes)} on this day`));
+    const select = node('select');
+    select.setAttribute('aria-label', `Classify ${item.label}`);
+    for (const [value, label] of [['unclassified', 'Unclassified'], ['work', 'Work'], ['personal', 'Personal']]) {
+      const option = node('option', '', label); option.value = value; select.append(option);
+    }
+    select.value = workRules.find(rule => rule.type === item.type && rule.label === item.label)?.classification || 'unclassified';
+    select.addEventListener('change', async () => {
+      const previous = workRules.find(rule => rule.type === item.type && rule.label === item.label)?.classification || 'unclassified';
+      select.disabled = true; $('#work-rule-error').textContent = '';
+      try {
+        await api('/api/work-rules', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:item.type, label:item.label, classification:select.value})});
+        workRules = workRules.filter(rule => !(rule.type === item.type && rule.label === item.label));
+        if (select.value !== 'unclassified') workRules.push({type:item.type, label:item.label, classification:select.value});
+        await loadDay(); renderWorkRules();
+      } catch (error) { select.value = previous; $('#work-rule-error').textContent = error.message; }
+      finally { select.disabled = false; }
+    });
+    row.append(name, select); list.append(row);
+  }
 }
 function renderDevicePie(card, device, entries, day) {
   const raw = deviceUsageBreakdown(device, entries, day);
@@ -245,6 +290,7 @@ async function loadDay() {
     $('#screen-unique').textContent = `${duration(data.totals.screen_unique_minutes || 0)} with simultaneous use counted once`;
     $('#water-total').textContent = data.totals.water_ml.toLocaleString();
     for (const kind of ['work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = duration(data.totals[`${kind}_minutes`]);
+    $('#work-detail').textContent = `${duration(data.totals.work_auto_minutes || 0)} from screens · ${duration(data.totals.work_manual_minutes || 0)} logged`;
     $('#entry-count').textContent = `${data.entries.length} ${data.entries.length === 1 ? 'activity' : 'activities'} logged`;
     $('#day-label').textContent = selected.toLocaleDateString([], {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}).toUpperCase();
     renderEntries(); renderWeek(days, dates);
@@ -284,6 +330,14 @@ $('#today').addEventListener('click', () => { $('#selected-date').value = localD
 $('#filter').addEventListener('change', renderEntries);
 $('#add-entry').addEventListener('click', () => openEntry());
 document.querySelectorAll('[data-kind]').forEach(button => button.addEventListener('click', () => openEntry(button.dataset.kind)));
+$('#manage-work').addEventListener('click', async () => {
+  $('#work-rule-error').textContent = '';
+  try {
+    workRules = (await api('/api/work-rules')).rules;
+    renderWorkRules(); $('#work-dialog').showModal();
+  } catch (error) { notify(error.message); }
+});
+$('#close-work').addEventListener('click', () => $('#work-dialog').close());
 $('#entry-kind').addEventListener('change', syncFields);
 for (const id of ['close-dialog', 'cancel-dialog']) $(`#${id}`).addEventListener('click', () => $('#entry-dialog').close());
 $('#entry-form').addEventListener('submit', async event => {

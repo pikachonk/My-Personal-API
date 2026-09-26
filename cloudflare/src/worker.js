@@ -193,20 +193,51 @@ function dayBounds(query) {
   return {day, start, end};
 }
 function iso(ms) { return new Date(ms).toISOString().replace('Z', '000Z'); }
-function summarize(entries, start, end) {
-  const totals = {water_ml: 0, work_minutes: 0, gym_minutes: 0, sleep_minutes: 0, screen_minutes: 0, screen_unique_minutes: 0};
-  const intervals = [];
+const browserApps = new Set(['chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'com.android.chrome', 'com.microsoft.emmx', 'org.mozilla.firefox']);
+function workRule(data) {
+  const type = text(data, 'type', '', 16);
+  const label = text(data, 'label', '', type === 'website' ? 253 : 200).toLowerCase();
+  const classification = text(data, 'classification', '', 16);
+  if (!['app', 'website'].includes(type) || !label || !['work', 'personal', 'unclassified'].includes(classification)) fail('Choose an app or website and a classification.');
+  if (type === 'website' && !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/.test(label)) fail('Enter a valid website domain.');
+  if (type === 'app' && browserApps.has(label)) fail('Classify browser website domains instead of the entire browser.');
+  return {type, label, classification};
+}
+function unionMs(intervals) {
+  intervals.sort((a, b) => a[0] - b[0]);
+  let total = 0, previousEnd = -Infinity;
+  for (const [s, t] of intervals) { total += Math.max(0, t - Math.max(s, previousEnd)); previousEnd = Math.max(previousEnd, t); }
+  return total;
+}
+function summarize(entries, start, end, rules = []) {
+  const totals = {water_ml: 0, work_minutes: 0, work_auto_minutes: 0, work_manual_minutes: 0, gym_minutes: 0, sleep_minutes: 0, screen_minutes: 0, screen_unique_minutes: 0};
+  const intervals = [], manualWork = [], autoWork = [], chrome = new Map(), sites = [];
+  const byRule = new Map(rules.map(r => [`${r.type}:${r.label}`, r.classification]));
   for (const e of entries) {
     if (e.kind === 'water') totals.water_ml += e.value;
     else if (['work', 'gym', 'sleep', 'screen'].includes(e.kind)) {
       const s = Math.max(Date.parse(e.started_at), start), t = Math.min(Date.parse(e.ended_at), end);
-      if (e.kind !== 'screen' || e.source !== 'windows-browser') totals[e.kind + '_minutes'] += Math.max(0, t - s) / 60000;
-      if (e.kind === 'screen' && e.source !== 'windows-browser' && t > s) intervals.push([s, t]);
+      if (!(t > s)) continue;
+      if (e.kind === 'work') manualWork.push([s, t]);
+      else if (e.kind !== 'screen' || e.source !== 'windows-browser') totals[e.kind + '_minutes'] += (t - s) / 60000;
+      if (e.kind === 'screen' && e.source !== 'windows-browser') {
+        intervals.push([s, t]);
+        const label = e.label.toLowerCase();
+        if (label === 'chrome.exe' || label === 'google chrome') {
+          if (!chrome.has(e.device_id)) chrome.set(e.device_id, []);
+          chrome.get(e.device_id).push([s, t]);
+        } else if (!browserApps.has(label) && byRule.get(`app:${label}`) === 'work') autoWork.push([s, t]);
+      } else if (e.kind === 'screen' && e.source === 'windows-browser' && byRule.get(`website:${e.label.toLowerCase()}`) === 'work') sites.push({device: e.device_id, s, t});
     }
   }
-  intervals.sort((a, b) => a[0] - b[0]);
-  let previousEnd = -Infinity;
-  for (const [s, t] of intervals) { totals.screen_unique_minutes += Math.max(0, t - Math.max(s, previousEnd)) / 60000; previousEnd = Math.max(previousEnd, t); }
+  for (const site of sites) for (const [s, t] of chrome.get(site.device) || []) {
+    const clippedStart = Math.max(s, site.s), clippedEnd = Math.min(t, site.t);
+    if (clippedEnd > clippedStart) autoWork.push([clippedStart, clippedEnd]);
+  }
+  totals.screen_unique_minutes = unionMs(intervals) / 60000;
+  totals.work_auto_minutes = unionMs(autoWork) / 60000;
+  totals.work_manual_minutes = unionMs(manualWork) / 60000;
+  totals.work_minutes = unionMs([...autoWork, ...manualWork]) / 60000;
   return Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Math.round(v * 100) / 100]));
 }
 async function exportPage(url, env) {
@@ -221,7 +252,8 @@ async function exportPage(url, env) {
   const rows = (await env.DB.prepare('SELECT rowid AS export_row,* FROM entries WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT 501').bind(after, until).all()).results;
   const hasMore = rows.length > 500, page = rows.slice(0, 500);
   const cursor = hasMore ? `${page.at(-1).export_row}:${until}` : null;
-  return json({version: 2, exported_at: nowISO(), entries: page.map(({export_row, ...e}) => e), devices: await devices(env), next_cursor: cursor});
+  const rules = (await env.DB.prepare('SELECT type,label,classification FROM work_rules ORDER BY type,label').all()).results;
+  return json({version: 2, exported_at: nowISO(), entries: page.map(({export_row, ...e}) => e), devices: await devices(env), work_rules: rules, next_cursor: cursor});
 }
 async function route(request, env) {
   if (!env.ADMIN_PASSWORD || env.ADMIN_PASSWORD.length < 16) fail('Set the ADMIN_PASSWORD Worker secret before using the dashboard.', 503);
@@ -245,6 +277,12 @@ async function route(request, env) {
     return json({signed_out: true}, 200, {'Set-Cookie': `${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});
   }
   if (method === 'POST' && path === '/api/devices') return pair(request, env);
+  if (method === 'PUT' && path === '/api/work-rules') {
+    const rule = workRule(object(await readBody(request)));
+    if (rule.classification === 'unclassified') await env.DB.prepare('DELETE FROM work_rules WHERE type=? AND label=?').bind(rule.type, rule.label).run();
+    else await env.DB.prepare('INSERT INTO work_rules(type,label,classification) VALUES(?,?,?) ON CONFLICT(type,label) DO UPDATE SET classification=excluded.classification').bind(rule.type, rule.label, rule.classification).run();
+    return json(rule);
+  }
   if (method === 'POST' && path === '/api/entries') {
     const e = entry(await readBody(request));
     await env.DB.prepare(`INSERT INTO entries(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`).bind(...columns.map(c => e[c])).run();
@@ -258,6 +296,7 @@ async function route(request, env) {
   if (method === 'GET') {
     if (path === '/api/health') { await env.DB.prepare('SELECT 1 FROM devices LIMIT 1').first(); return json({status: 'ok'}); }
     if (path === '/api/devices') return json({devices: await devices(env), sync: {enabled: true, cloud: true, url: env.PUBLIC_ORIGIN, certificate_sha256: ''}});
+    if (path === '/api/work-rules') return json({rules: (await env.DB.prepare('SELECT type,label,classification FROM work_rules ORDER BY type,label').all()).results});
     if (path === '/api/export') return exportPage(url, env);
     if (path === '/api/day' || path === '/api/entries') {
       const {day, start, end} = dayBounds(url.searchParams);
@@ -269,7 +308,8 @@ async function route(request, env) {
         SELECT * FROM entries INDEXED BY entries_end WHERE ended_at>? AND ended_at<=? AND started_at<?
       ) SELECT e.*,d.name AS device_name FROM daily e LEFT JOIN devices d ON e.device_id=d.id ORDER BY e.started_at DESC`)
         .bind(iso(start), iso(end), iso(start), iso(start + 7 * 86400000), iso(start)).all()).results;
-      return json(path === '/api/day' ? {date: day, totals: summarize(entries, start, end), entries} : {entries});
+      const rules = path === '/api/day' ? (await env.DB.prepare('SELECT type,label,classification FROM work_rules').all()).results : [];
+      return json(path === '/api/day' ? {date: day, totals: summarize(entries, start, end, rules), entries} : {entries});
     }
   }
   const assets = {'/': '/index.html', '/app.js': '/app.js', '/style.css': '/style.css', '/magic.css': '/magic.css', '/login': '/login.html', '/login.js': '/login.js', '/api/docs': '/api.html'};

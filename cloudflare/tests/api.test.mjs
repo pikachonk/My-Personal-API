@@ -31,12 +31,14 @@ before(async () => {
       routerConfig: {has_user_worker: true}, assetConfig: {html_handling: 'none'}}}));
   db = await mf.getD1Database('DB');
   // execute() accepts a complete migration, including trigger BEGIN/END blocks.
-  const sql = await readFile('migrations/0001_initial.sql', 'utf8');
-  await db.prepare(sql).run();
+  for (const migration of ['0001_initial.sql', '0002_work_rules.sql']) {
+    const sql = await readFile(`migrations/${migration}`, 'utf8');
+    await db.prepare(sql).run();
+  }
 });
 after(async () => { await mf?.dispose(); });
 beforeEach(async () => {
-  await db.batch(['entries', 'sync_receipts', 'devices', 'sessions', 'login_limit'].map(t => db.prepare(`DELETE FROM ${t}`)));
+  await db.batch(['entries', 'sync_receipts', 'devices', 'sessions', 'login_limit', 'work_rules'].map(t => db.prepare(`DELETE FROM ${t}`)));
   cookie = null;
   const r = await call('/api/login', {method: 'POST', signed: false, data: {password}});
   assert.equal(r.status, 200, JSON.stringify(r.body)); cookie = r.headers.get('Set-Cookie').split(';')[0];
@@ -117,6 +119,30 @@ test('overlap, timezones, midnight boundaries and DST-length days', async () => 
   const dst = await call('/api/day?date=2026-03-08&start=2026-03-08T05:00:00Z&end=2026-03-09T04:00:00Z');
   assert.equal(dst.body.totals.sleep_minutes, 420);
   assert.equal((await call('/api/day?date=2026-02-30')).status, 400);
+});
+test('approved apps and sites become work without double-counting browsers, devices, or manual time', async () => {
+  const pc = await pair('PC'), phone = await pair('Phone', 'android');
+  await upload(pc, [event('code', {app: 'code.exe'}),
+    event('browser', {started_at: '2026-09-20T11:00:00Z', ended_at: '2026-09-20T12:00:00Z'}),
+    event('site', {type: 'website', app: 'example.com', started_at: '2026-09-20T11:15:00Z', ended_at: '2026-09-20T11:45:00Z'})]);
+  await upload(phone, [event('phone', {app: 'code.exe', started_at: '2026-09-20T10:30:00Z', ended_at: '2026-09-20T11:30:00Z'})]);
+  const dayPath = '/api/day?date=2026-09-20';
+  assert.equal((await call(dayPath)).body.totals.work_minutes, 0);
+  assert.equal((await call('/api/work-rules', {signed: false})).status, 401);
+  assert.equal((await call('/api/work-rules', {method:'PUT', data:{type:'app', label:'chrome.exe', classification:'work'}})).status, 400);
+  for (const [type, label] of [['app', 'CODE.EXE'], ['website', 'example.com']])
+    assert.equal((await call('/api/work-rules', {method:'PUT', data:{type, label, classification:'work'}})).status, 200);
+  assert.equal((await call('/api/work-rules')).body.rules.length, 2);
+  let totals = (await call(dayPath)).body.totals;
+  assert.equal(totals.work_auto_minutes, 105);
+  assert.equal(totals.work_minutes, 105);
+  assert.equal(totals.screen_minutes, 180);
+  await call('/api/entries', {method:'POST', data:{kind:'work', started_at:'2026-09-20T11:30:00Z', ended_at:'2026-09-20T12:00:00Z'}});
+  totals = (await call(dayPath)).body.totals;
+  assert.equal(totals.work_manual_minutes, 30);
+  assert.equal(totals.work_minutes, 120);
+  await call('/api/work-rules', {method:'PUT', data:{type:'app', label:'code.exe', classification:'unclassified'}});
+  assert.equal((await call(dayPath)).body.totals.work_minutes, 45);
 });
 test('manual activities and timestamp validation preserve fractional seconds', async () => {
   const water = await call('/api/entries', {method: 'POST', data: {kind: 'water', value: 250, started_at: '2026-09-20T10:00:00.123456Z'}});
