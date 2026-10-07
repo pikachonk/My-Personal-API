@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const names = {water: 'Hydration', work: 'Work', gym: 'Movement', sleep: 'Sleep', screen: 'Screen time', custom: 'Custom'};
+const names = {water: 'Hydration', work: 'Work', gym: 'Movement', sleep: 'Sleep', screen: 'Screen time', food: 'Food', custom: 'Custom'};
 const symbols = {water: '◒', work: '▧', gym: '↗', sleep: '☾', screen: '▣', custom: '◇'};
 const knownApps = {
   'chrome.exe': 'Google Chrome', 'msedge.exe': 'Microsoft Edge', 'firefox.exe': 'Firefox', 'explorer.exe': 'File Explorer',
@@ -17,6 +17,17 @@ let workAi = {available: false, enabled: false, suggestions: []};
 let loadId = 0;
 let toastTimer;
 const historyCache = new Map();
+let foodImageData = '';
+let foodAnalysisId = 0;
+symbols.food = '🥗';
+const foodNutrients = ['calories_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugars_g', 'sodium_mg'];
+function foodNutrition(entry) {
+  try { return JSON.parse(entry.nutrition_json || '{}'); } catch { return {}; }
+}
+function nutritionText(nutrients) {
+  const value = key => Number(nutrients?.[key] || 0);
+  return `${Math.round(value('calories_kcal'))} kcal · Protein ${value('protein_g').toFixed(1)} g · Carbs ${value('carbs_g').toFixed(1)} g · Fat ${value('fat_g').toFixed(1)} g · Fiber ${value('fiber_g').toFixed(1)} g · Sugar ${value('sugars_g').toFixed(1)} g · Sodium ${Math.round(value('sodium_mg'))} mg`;
+}
 const pad = (n) => String(n).padStart(2, '0');
 function localDate(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function localInput(d) { return `${localDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; }
@@ -176,17 +187,18 @@ function renderWorkRules() {
       node('small', '', `${item.type === 'app' ? 'App' : 'Website'} · ${duration(item.minutes)} on this day`));
     const manual = workRules.find(rule => rule.type === item.type && rule.label === item.label);
     const guess = item.type === 'website' ? workAi.suggestions?.find(s => s.label === item.label) : null;
+    const appliedGuess = workAi.enabled && guess && ['work', 'personal'].includes(guess.classification) ? guess.classification : null;
     if (guess && !manual && workAi.enabled)
-      name.append(node('small', 'work-ai-guess', `AI guess: ${guess.classification} · ${guess.reason || 'Based on the domain only'}`));
-    else if (guess && manual) name.append(node('small', '', 'Your choice overrides the AI guess.'));
+      name.append(node('small', 'work-ai-guess', `${appliedGuess ? 'AI classification applied' : 'AI guess'}: ${guess.classification} · ${guess.reason || 'Based on the domain only'}`));
+    else if (guess && manual && workAi.enabled) name.append(node('small', '', 'Your choice overrides the AI guess.'));
     const select = node('select');
     select.setAttribute('aria-label', `Classify ${item.label}`);
     for (const [value, label] of [['unclassified', 'Unclassified'], ['work', 'Work'], ['personal', 'Personal']]) {
       const option = node('option', '', label); option.value = value; select.append(option);
     }
-    select.value = workRules.find(rule => rule.type === item.type && rule.label === item.label)?.classification || 'unclassified';
+    select.value = manual?.classification || appliedGuess || 'unclassified';
     select.addEventListener('change', async () => {
-      const previous = workRules.find(rule => rule.type === item.type && rule.label === item.label)?.classification || 'unclassified';
+      const previous = manual?.classification || appliedGuess || 'unclassified';
       select.disabled = true; $('#work-rule-error').textContent = '';
       try {
         await api('/api/work-rules', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:item.type, label:item.label, classification:select.value})});
@@ -267,11 +279,14 @@ function renderEntries() {
     const fmt = d => new Date(d).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
     const times = fmt(entry.started_at) + (entry.ended_at ? ` → ${fmt(entry.ended_at)}` : '');
     const website = entry.source === 'windows-browser';
+    const food = entry.kind === 'food' ? foodNutrition(entry) : null;
     const title = entry.kind === 'screen' && !website ? displayAppName(entry.label) : entry.label;
     const subtitle = entry.session_count ? `${website ? 'Website' : 'App'} · ${entry.device_name || 'Device'} · ${entry.session_count} sessions` : `${names[entry.kind]} · ${times}${entry.source !== 'manual' ? ` · ${entry.source}` : ''}`;
     copy.append(node('div', 'entry-title', title), node('div', 'entry-subtitle', subtitle));
+    if (food?.items?.length) copy.append(node('p', 'entry-food-items', food.items.join(' · ')));
+    if (food?.nutrients) copy.append(node('p', 'entry-notes entry-nutrition', `Estimated nutrition: ${nutritionText(food.nutrients)}`));
     if (entry.notes) copy.append(node('p', 'entry-notes', entry.notes));
-    const amount = entry.session_count ? duration(entry.daily_minutes) : entry.kind === 'water' ? `${entry.value.toLocaleString()} ml` : entry.ended_at ? duration(minutesInDay(entry, $('#selected-date').value)) : entry.value ? `${entry.value} ${entry.unit}` : '';
+    const amount = entry.session_count ? duration(entry.daily_minutes) : entry.kind === 'food' ? `${Math.round(food?.nutrients?.calories_kcal || 0)} kcal` : entry.kind === 'water' ? `${entry.value.toLocaleString()} ml` : entry.ended_at ? duration(minutesInDay(entry, $('#selected-date').value)) : entry.value ? `${entry.value} ${entry.unit}` : '';
     const remove = node('button', 'delete-entry', '×');
     remove.setAttribute('aria-label', `Delete ${entry.label}`);
     remove.addEventListener('click', async () => {
@@ -329,6 +344,13 @@ async function loadDay() {
     $('#water-total').textContent = data.totals.water_ml.toLocaleString();
     for (const kind of ['work', 'gym', 'sleep', 'screen']) $(`#${kind}-total`).textContent = duration(data.totals[`${kind}_minutes`]);
     $('#work-detail').textContent = `${duration(data.totals.work_auto_minutes || 0)} from screens · ${duration(data.totals.work_manual_minutes || 0)} logged`;
+    $('#nutrition-calories').textContent = `${Math.round(data.totals.calories_kcal || 0).toLocaleString()} kcal`;
+    $('#nutrition-protein').textContent = `${Number(data.totals.protein_g || 0).toFixed(1)} g`;
+    $('#nutrition-carbs').textContent = `${Number(data.totals.carbs_g || 0).toFixed(1)} g`;
+    $('#nutrition-fat').textContent = `${Number(data.totals.fat_g || 0).toFixed(1)} g`;
+    $('#nutrition-fiber').textContent = `${Number(data.totals.fiber_g || 0).toFixed(1)} g`;
+    $('#nutrition-sugars').textContent = `${Number(data.totals.sugars_g || 0).toFixed(1)} g`;
+    $('#nutrition-sodium').textContent = `${Math.round(data.totals.sodium_mg || 0).toLocaleString()} mg`;
     $('#entry-count').textContent = `${data.entries.length} ${data.entries.length === 1 ? 'activity' : 'activities'} logged`;
     $('#day-label').textContent = selected.toLocaleDateString([], {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}).toUpperCase();
     renderEntries(); renderWeek(days, dates);
@@ -358,6 +380,45 @@ function openEntry(kind = 'water') {
   form.elements.value.value = kind === 'water' ? '250' : '';
   syncFields(); $('#entry-dialog').showModal();
 }
+function openFood() {
+  const form = $('#food-form'); form.reset(); foodImageData = ''; foodAnalysisId++;
+  $('#food-review').hidden = true; $('#food-preview').hidden = true; $('#food-preview').removeAttribute('src');
+  $('#food-image-name').textContent = ''; $('#food-analysis-status').textContent = ''; $('#food-error').textContent = '';
+  $('#food-save').disabled = true; $('#analyze-food').disabled = true;
+  $('#take-food-photo').disabled = false; $('#choose-food-photo').disabled = false;
+  $('#food-camera-input').value = ''; $('#food-file-input').value = '';
+  const now = new Date(), selected = new Date(`${$('#selected-date').value}T12:00:00`);
+  now.setFullYear(selected.getFullYear(), selected.getMonth(), selected.getDate());
+  form.elements.when.value = localInput(now); $('#food-dialog').showModal();
+}
+async function prepareFoodPhoto(file) {
+  if (!file) return;
+  const photoId = ++foodAnalysisId; foodImageData = '';
+  $('#food-error').textContent = '';
+  $('#food-preview').hidden = true; $('#food-save').disabled = true;
+  $('#analyze-food').disabled = true; $('#food-analysis-status').textContent = '';
+  if (!file.type.startsWith('image/') || file.size > 12 * 1024 * 1024) {
+    $('#food-error').textContent = 'Choose an image smaller than 12 MB.'; return;
+  }
+  try {
+    const image = await createImageBitmap(file);
+    if (photoId !== foodAnalysisId) { image.close?.(); return; }
+    const scale = Math.min(1, 1280 / Math.max(image.width, image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(image.width * scale); canvas.height = Math.round(image.height * scale);
+    canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height); image.close?.();
+    foodImageData = canvas.toDataURL('image/jpeg', 0.82);
+    if (photoId !== foodAnalysisId) { foodImageData = ''; return; }
+    if (foodImageData.length > 4_500_000) throw new Error('This photo is too large after compression. Choose a smaller image.');
+    $('#food-preview').src = foodImageData; $('#food-preview').hidden = false;
+    $('#food-image-name').textContent = `${file.name} · ready for analysis`;
+    $('#food-review').hidden = true; $('#food-save').disabled = true;
+    $('#analyze-food').disabled = false;
+    $('#food-analysis-status').textContent = 'Review the image, then ask AI for an estimate.';
+  } catch (error) {
+    if (photoId === foodAnalysisId) { foodImageData = ''; $('#food-error').textContent = error.message || 'Could not open this image. Choose a JPEG, PNG, or WebP photo.'; }
+  }
+}
 $('#selected-date').value = localDate();
 $('#entry-kind option[value="screen"]').remove();
 $('#selected-date').addEventListener('change', loadDay);
@@ -367,6 +428,32 @@ for (const [id, delta] of [['previous-day', -1], ['next-day', 1]]) $(`#${id}`).a
 $('#today').addEventListener('click', () => { $('#selected-date').value = localDate(); loadDay(); });
 $('#filter').addEventListener('change', renderEntries);
 $('#add-entry').addEventListener('click', () => openEntry());
+$('#add-food').addEventListener('click', openFood);
+for (const id of ['food-camera-input', 'food-file-input']) $(`#${id}`).addEventListener('change', event => prepareFoodPhoto(event.currentTarget.files?.[0]));
+$('#take-food-photo').addEventListener('click', () => $('#food-camera-input').click());
+$('#choose-food-photo').addEventListener('click', () => $('#food-file-input').click());
+$('#analyze-food').addEventListener('click', async () => {
+  if (!foodImageData) { $('#food-error').textContent = 'Take or choose a food photo first.'; return; }
+  const button = $('#analyze-food'), analysisId = ++foodAnalysisId, image = foodImageData;
+  button.disabled = true; $('#take-food-photo').disabled = true; $('#choose-food-photo').disabled = true; $('#food-error').textContent = '';
+  $('#food-analysis-status').textContent = 'Identifying foods and estimating nutrition…';
+  try {
+    const result = await api('/api/food/analyze', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({image})});
+    if (analysisId !== foodAnalysisId) return;
+    $('#food-items').value = result.items.join('\n');
+    for (const key of foodNutrients) $('#food-form').elements[key].value = result.nutrients[key];
+    $('#food-review').hidden = false; $('#food-save').disabled = false;
+    $('#food-analysis-status').textContent = 'Review the food names and estimates before saving.';
+  } catch (error) {
+    if (analysisId !== foodAnalysisId) return;
+    $('#food-analysis-status').textContent = '';
+    $('#food-error').textContent = error.message;
+  } finally {
+    if (analysisId === foodAnalysisId) { button.disabled = false; $('#take-food-photo').disabled = false; $('#choose-food-photo').disabled = false; }
+  }
+});
+for (const id of ['close-food', 'cancel-food']) $(`#${id}`).addEventListener('click', () => $('#food-dialog').close());
+$('#food-dialog').addEventListener('close', () => { foodAnalysisId++; foodImageData = ''; $('#food-preview').removeAttribute('src'); });
 document.querySelectorAll('[data-kind]').forEach(button => button.addEventListener('click', () => openEntry(button.dataset.kind)));
 $('#manage-work').addEventListener('click', async () => {
   $('#work-rule-error').textContent = '';
@@ -411,6 +498,23 @@ $('#entry-form').addEventListener('submit', async event => {
     $('#entry-dialog').close(); await loadDay(); notify('Activity saved. A little more of your day, remembered.');
   } catch (error) { $('#form-error').textContent = error.message; }
   finally { $('#save-entry').disabled = false; }
+});
+$('#food-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget, items = form.elements.food_items.value.split('\n').map(item => item.trim()).filter(Boolean);
+  if (!form.reportValidity()) return;
+  if (!items.length || items.length > 12) { $('#food-error').textContent = 'Add between 1 and 12 food items.'; return; }
+  const nutrients = Object.fromEntries(foodNutrients.map(key => [key, Number(form.elements[key].value)]));
+  const button = $('#food-save'); button.disabled = true; $('#food-error').textContent = '';
+  try {
+    const label = items.slice(0, 2).join(', ').slice(0, 253);
+    await api('/api/entries', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+      kind:'food', label, started_at:new Date(form.elements.when.value).toISOString(),
+      notes:'AI nutrition estimate; user-reviewed', source:'manual', food:{items, nutrients},
+    })});
+    $('#food-dialog').close(); await loadDay(); notify('Food and estimated nutrition saved.');
+  } catch (error) { $('#food-error').textContent = error.message; }
+  finally { button.disabled = false; }
 });
 document.querySelectorAll('[data-water]').forEach(button => button.addEventListener('click', async () => {
   const buttons = document.querySelectorAll('[data-water]'); buttons.forEach(b => b.disabled = true);
@@ -504,3 +608,33 @@ $('#sign-out').addEventListener('click', async () => {
   try { await api('/api/logout', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); location.assign('/login'); }
   catch(error) { notify(error.message); }
 });
+
+let pendingInstallPrompt = null;
+const installButton = $('#install-app');
+const runningStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+installButton.hidden = runningStandalone;
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+}
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  pendingInstallPrompt = event;
+  installButton.hidden = false;
+});
+window.addEventListener('appinstalled', () => {
+  pendingInstallPrompt = null;
+  installButton.hidden = true;
+});
+installButton.addEventListener('click', async () => {
+  if (pendingInstallPrompt) {
+    pendingInstallPrompt.prompt();
+    await pendingInstallPrompt.userChoice;
+    pendingInstallPrompt = null;
+    return;
+  }
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  notify(isIOS
+    ? 'To install, tap Share, then Add to Home Screen.'
+    : 'In Chrome, open the menu and choose Install app or Add to Home screen.');
+});
+if (new URLSearchParams(location.search).get('action') === 'food') setTimeout(openFood, 0);

@@ -19,7 +19,10 @@ from uuid import uuid4
 from device_sync import DeviceStore, SyncHandler, prepare_certificate, union_minutes
 
 ROOT = Path(__file__).resolve().parent
-KINDS = {"water", "work", "gym", "sleep", "screen", "custom"}
+KINDS = {"water", "work", "gym", "sleep", "screen", "food", "custom"}
+NUTRITION_FIELDS = ("calories_kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugars_g", "sodium_mg")
+NUTRITION_LIMITS = {"calories_kcal": 10000, "protein_g": 1000, "carbs_g": 1000, "fat_g": 1000,
+                    "fiber_g": 1000, "sugars_g": 1000, "sodium_mg": 100000}
 DB_PATH = Path(os.environ.get("DAYBOOK_DB", ROOT / "data" / "daybook.db"))
 SYNC_INFO = {"enabled": False}
 PUBLIC_ORIGIN = ""
@@ -46,7 +49,10 @@ def initialize():
         conn.execute("""CREATE TABLE IF NOT EXISTS entries (
             id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT NOT NULL,
             started_at TEXT NOT NULL, ended_at TEXT, value REAL, unit TEXT NOT NULL,
-            notes TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL)""")
+            notes TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL,
+            nutrition_json TEXT NOT NULL DEFAULT '')""")
+        if "nutrition_json" not in {row[1] for row in conn.execute("PRAGMA table_info(entries)")}:
+            conn.execute("ALTER TABLE entries ADD COLUMN nutrition_json TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS entries_start ON entries(started_at)")
         conn.execute("""CREATE TABLE IF NOT EXISTS work_rules (
             type TEXT NOT NULL CHECK(type IN ('app', 'website')),
@@ -84,7 +90,7 @@ def validate_entry(data):
         raise ValueError("Send a JSON object.")
     kind = data.get("kind")
     if not isinstance(kind, str) or kind not in KINDS:
-        raise ValueError("kind must be water, work, gym, sleep, screen, or custom.")
+        raise ValueError("kind must be water, work, gym, sleep, screen, food, or custom.")
     start = timestamp(data.get("started_at"))
     end = timestamp(data["ended_at"]) if data.get("ended_at") else None
     if end and end <= start:
@@ -99,22 +105,47 @@ def validate_entry(data):
         raise ValueError("Water requires a value between 0 and 10,000 ml.")
     if kind == "water" and end:
         raise ValueError("Water entries use a single timestamp.")
+    if kind == "food" and end:
+        raise ValueError("Food entries use a single timestamp.")
     if kind in {"work", "gym", "sleep", "screen"} and not end:
         raise ValueError("This activity requires an end time.")
-    label = short_text(data, "label") or kind.capitalize()
+    nutrition_json = ""
+    clean_items = []
+    if kind == "food":
+        food = data.get("food")
+        if not isinstance(food, dict):
+            raise ValueError("Add food items and nutrition estimates.")
+        items = food.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= 12:
+            raise ValueError("Add between 1 and 12 food items.")
+        for item in items:
+            if not isinstance(item, str) or not item.strip() or len(item.strip()) > 160:
+                raise ValueError("Each food item must be text, at most 160 characters.")
+            clean_items.append(item.strip())
+        nutrients = food.get("nutrients")
+        if not isinstance(nutrients, dict):
+            raise ValueError("Add nutrition estimates for the food.")
+        clean_nutrients = {}
+        for field in NUTRITION_FIELDS:
+            amount = nutrients.get(field)
+            if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) or not 0 <= amount <= NUTRITION_LIMITS[field]:
+                raise ValueError(f"food.nutrients.{field} must be a non-negative number within range.")
+            clean_nutrients[field] = round(amount, 1)
+        nutrition_json = json.dumps({"items": clean_items, "nutrients": clean_nutrients}, allow_nan=False)
+    label = short_text(data, "label", limit=253 if kind == "food" else 200) or (", ".join(clean_items) if kind == "food" else kind.capitalize())
     unit = "ml" if kind == "water" else short_text(data, "unit", limit=30)
     return dict(id=str(uuid4()), kind=kind, label=label, started_at=start.isoformat(),
                 ended_at=end.isoformat() if end else None, value=value, unit=unit,
                 notes=short_text(data, "notes", limit=2000),
                 source=short_text(data, "source", "manual", 80) or "manual",
-                created_at=datetime.now(timezone.utc).isoformat())
+                created_at=datetime.now(timezone.utc).isoformat(), nutrition_json=nutrition_json)
 
 
 def insert_entry(data):
     entry = validate_entry(data)
     with connect() as conn:
-        conn.execute("INSERT INTO entries (id,kind,label,started_at,ended_at,value,unit,notes,source,created_at) VALUES (:id,:kind,:label,:started_at,:ended_at,"
-                     ":value,:unit,:notes,:source,:created_at)", entry)
+        conn.execute("INSERT INTO entries (id,kind,label,started_at,ended_at,value,unit,notes,source,created_at,nutrition_json) VALUES (:id,:kind,:label,:started_at,:ended_at,"
+                     ":value,:unit,:notes,:source,:created_at,:nutrition_json)", entry)
     return entry
 
 
@@ -160,12 +191,22 @@ def validate_work_rule(data):
 
 def summarize(entries, start, end, rules=()):
     totals = dict(water_ml=0, work_minutes=0, work_auto_minutes=0, work_manual_minutes=0,
-                  gym_minutes=0, sleep_minutes=0, screen_minutes=0)
+                  gym_minutes=0, sleep_minutes=0, screen_minutes=0,
+                  calories_kcal=0, protein_g=0, carbs_g=0, fat_g=0, fiber_g=0, sugars_g=0, sodium_mg=0)
     manual_work, auto_work, screen_intervals, chrome, sites = [], [], [], {}, []
     by_rule = {(rule["type"], rule["label"]): rule["classification"] for rule in rules}
     for entry in entries:
         if entry["kind"] == "water":
             totals["water_ml"] += entry["value"]
+        elif entry["kind"] == "food":
+            try:
+                nutrition = json.loads(entry.get("nutrition_json") or "{}")
+                for field in NUTRITION_FIELDS:
+                    amount = nutrition.get("nutrients", {}).get(field)
+                    if isinstance(amount, (int, float)) and math.isfinite(amount):
+                        totals[field] += amount
+            except (AttributeError, TypeError, ValueError):
+                pass
         elif entry["kind"] in {"work", "gym", "sleep", "screen"}:
             interval = (max(timestamp(entry["started_at"]), start), min(timestamp(entry["ended_at"]), end))
             if interval[1] <= interval[0]:
@@ -239,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
         if host not in hosts or (origin and origin != expected):
             self.reply(403, {"error": "Use the dashboard's configured address."})
             return False
-        if PUBLIC_ORIGIN and urlparse(self.path).path not in {"/login", "/login.js", "/style.css", "/magic.css", "/api/login"}:
+        if PUBLIC_ORIGIN and urlparse(self.path).path not in {"/login", "/login.js", "/style.css", "/magic.css", "/favicon.svg", "/manifest.webmanifest", "/service-worker.js", "/offline.html", "/pwa-icon-192.svg", "/pwa-icon-512.svg", "/pwa-icon-maskable.svg", "/pwa-icon-192.png", "/pwa-icon-512.png", "/api/login"}:
             cookie = SimpleCookie()
             try:
                 cookie.load(self.headers.get("Cookie", ""))
@@ -250,7 +291,8 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path.startswith("/api/"):
                     self.reply(401, {"error": "Sign in to your dashboard."})
                 else:
-                    self.reply(302, {}, headers={"Location": "/login"})
+                    location = "/login?return=%2F%3Faction%3Dfood" if urlparse(self.path).path == "/" and parse_qs(urlparse(self.path).query).get("action") == ["food"] else "/login"
+                    self.reply(302, {}, headers={"Location": location})
                 return False
         return True
 
@@ -295,6 +337,15 @@ class Handler(BaseHTTPRequestHandler):
                       "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/style.css": ("style.css", "text/css; charset=utf-8"),
                       "/magic.css": ("magic.css", "text/css; charset=utf-8"),
+                      "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+                      "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json; charset=utf-8"),
+                      "/service-worker.js": ("service-worker.js", "text/javascript; charset=utf-8"),
+                      "/offline.html": ("offline.html", "text/html; charset=utf-8"),
+                      "/pwa-icon-192.svg": ("pwa-icon-192.svg", "image/svg+xml"),
+                      "/pwa-icon-512.svg": ("pwa-icon-512.svg", "image/svg+xml"),
+                      "/pwa-icon-maskable.svg": ("pwa-icon-maskable.svg", "image/svg+xml"),
+                      "/pwa-icon-192.png": ("pwa-icon-192.png", "image/png"),
+                      "/pwa-icon-512.png": ("pwa-icon-512.png", "image/png"),
                       "/login": ("login.html", "text/html; charset=utf-8"),
                       "/login.js": ("login.js", "text/javascript; charset=utf-8"),
                       "/api/docs": ("api.html", "text/html; charset=utf-8")}
@@ -312,6 +363,8 @@ class Handler(BaseHTTPRequestHandler):
             return SyncHandler.do_POST(self)
         if not self.allowed():
             return
+        if self.path == "/api/food/analyze":
+            return self.reply(503, {"error": "Photo food logging is available on the Cloudflare-hosted dashboard."})
         if self.path not in {"/api/entries", "/api/devices", "/api/login", "/api/logout"}:
             return self.reply(404, {"error": "Not found."})
         if self.headers.get("Content-Type", "").split(";")[0] != "application/json":

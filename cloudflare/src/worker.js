@@ -1,8 +1,9 @@
 // Cloudflare adapter for the existing dashboard and Windows/Android wire protocol.
 const encoder = new TextEncoder();
-const kinds = new Set(['water', 'work', 'gym', 'sleep', 'screen', 'custom']);
+const kinds = new Set(['water', 'work', 'gym', 'sleep', 'screen', 'food', 'custom']);
 const deviceColumns = 'id,name,platform,created_at,last_seen,revoked';
-const columns = ['id', 'kind', 'label', 'started_at', 'ended_at', 'value', 'unit', 'notes', 'source', 'created_at', 'device_id', 'external_id'];
+const columns = ['id', 'kind', 'label', 'started_at', 'ended_at', 'value', 'unit', 'notes', 'source', 'created_at', 'device_id', 'external_id', 'nutrition_json'];
+const nutritionFields = ['calories_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugars_g', 'sodium_mg'];
 const cookieName = 'daybook_session';
 const securityHeaders = {
   'Cache-Control': 'no-store',
@@ -45,17 +46,33 @@ function nowISO() { return new Date().toISOString().replace('Z', '000Z'); }
 function entry(data) {
   object(data);
   const kind = data.kind;
-  if (!kinds.has(kind)) fail('kind must be water, work, gym, sleep, screen, or custom.');
+  if (!kinds.has(kind)) fail('kind must be water, work, gym, sleep, screen, food, or custom.');
   const start = timestamp(data.started_at), end = data.ended_at ? timestamp(data.ended_at) : null;
   if (end && (end <= start || Date.parse(end) - Date.parse(start) > 7 * 86400000)) fail('The end must follow the start, by at most seven days.');
+  if (kind === 'food' && end) fail('Food entries use a single timestamp.');
   const value = data.value ?? null;
   if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1000000)) fail('value must be positive and no greater than 1,000,000.');
   if (kind === 'water' && (value === null || value > 10000 || end)) fail('Water requires 0–10,000 ml and a single timestamp.');
   if (['work', 'gym', 'sleep', 'screen'].includes(kind) && !end) fail('This activity requires an end time.');
-  return {id: crypto.randomUUID(), kind, label: text(data, 'label', '', 253) || kind[0].toUpperCase() + kind.slice(1),
+  let nutrition = null;
+  if (kind === 'food') {
+    const food = object(data.food);
+    if (!Array.isArray(food.items) || !food.items.length || food.items.length > 12) fail('Add between 1 and 12 food items.');
+    const items = food.items.map(item => {
+      if (typeof item !== 'string' || !item.trim() || item.trim().length > 160) fail('Each food item must be text, at most 160 characters.');
+      return item.trim();
+    });
+    const nutrients = object(food.nutrients);
+    const limits = {calories_kcal: 10000, protein_g: 1000, carbs_g: 1000, fat_g: 1000, fiber_g: 1000, sugars_g: 1000, sodium_mg: 100000};
+    for (const key of nutritionFields) {
+      if (typeof nutrients[key] !== 'number' || !Number.isFinite(nutrients[key]) || nutrients[key] < 0 || nutrients[key] > limits[key]) fail(`food.nutrients.${key} must be a non-negative number within range.`);
+    }
+    nutrition = {items, nutrients: Object.fromEntries(nutritionFields.map(key => [key, Math.round(nutrients[key] * 10) / 10]))};
+  }
+  return {id: crypto.randomUUID(), kind, label: text(data, 'label', '', 253) || (nutrition?.items.join(', ') || kind[0].toUpperCase() + kind.slice(1)),
     started_at: start, ended_at: end, value, unit: kind === 'water' ? 'ml' : text(data, 'unit', '', 30),
     notes: text(data, 'notes', '', 2000), source: text(data, 'source', 'manual', 80) || 'manual',
-    created_at: nowISO(), device_id: null, external_id: null};
+    created_at: nowISO(), device_id: null, external_id: null, nutrition_json: nutrition ? JSON.stringify(nutrition) : ''};
 }
 async function readBody(request, limit = 16384) {
   if (request.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/json') fail('Send Content-Type: application/json.', 415);
@@ -285,11 +302,18 @@ function unionMs(intervals) {
   return total;
 }
 function summarize(entries, start, end, rules = []) {
-  const totals = {water_ml: 0, work_minutes: 0, work_auto_minutes: 0, work_manual_minutes: 0, gym_minutes: 0, sleep_minutes: 0, screen_minutes: 0, screen_unique_minutes: 0};
+  const totals = {water_ml: 0, work_minutes: 0, work_auto_minutes: 0, work_manual_minutes: 0, gym_minutes: 0, sleep_minutes: 0, screen_minutes: 0, screen_unique_minutes: 0,
+    calories_kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugars_g: 0, sodium_mg: 0};
   const intervals = [], manualWork = [], autoWork = [], chrome = new Map(), sites = [];
   const byRule = new Map(rules.map(r => [`${r.type}:${r.label}`, r.classification]));
   for (const e of entries) {
     if (e.kind === 'water') totals.water_ml += e.value;
+    else if (e.kind === 'food') {
+      try {
+        const nutrition = JSON.parse(e.nutrition_json || '{}');
+        for (const key of nutritionFields) if (Number.isFinite(nutrition.nutrients?.[key])) totals[key] += nutrition.nutrients[key];
+      } catch { /* Ignore malformed legacy nutrition data. */ }
+    }
     else if (['work', 'gym', 'sleep', 'screen'].includes(e.kind)) {
       const s = Math.max(Date.parse(e.started_at), start), t = Math.min(Date.parse(e.ended_at), end);
       if (!(t > s)) continue;
@@ -314,6 +338,48 @@ function summarize(entries, start, end, rules = []) {
   totals.work_manual_minutes = unionMs(manualWork) / 60000;
   totals.work_minutes = unionMs([...autoWork, ...manualWork]) / 60000;
   return Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Math.round(v * 100) / 100]));
+}
+const foodAiModel = '@cf/google/gemma-4-26b-a4b-it';
+const foodAiDailyCap = 20;
+function parseFoodAi(response) {
+  try {
+    const raw = typeof response?.response === 'string' ? response.response : '';
+    const first = raw.indexOf('{'), last = raw.lastIndexOf('}');
+    const answer = JSON.parse(first >= 0 && last > first ? raw.slice(first, last + 1) : '');
+    if (!Array.isArray(answer.items) || !answer.items.length || answer.items.length > 12) throw new Error('No foods found.');
+    const items = answer.items.map(item => {
+      const name = typeof item === 'string' ? item : `${item?.name || ''}${item?.portion ? ` (${item.portion})` : ''}`;
+      if (!name.trim() || name.length > 160) throw new Error('Invalid food item.');
+      return name.trim();
+    });
+    const source = answer.nutrients || answer;
+    const limits = {calories_kcal: 10000, protein_g: 1000, carbs_g: 1000, fat_g: 1000, fiber_g: 1000, sugars_g: 1000, sodium_mg: 100000};
+    const nutrients = {};
+    for (const key of nutritionFields) {
+      const value = source[key];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > limits[key]) throw new Error('Missing nutrition estimates.');
+      nutrients[key] = Math.round(value * 10) / 10;
+    }
+    return {items, nutrients};
+  } catch { fail('The AI could not identify the food clearly. Try another photo with the whole meal in view.', 422); }
+}
+async function analyzeFood(request, env) {
+  if (!env.AI) fail('Photo analysis is unavailable on this server.', 503);
+  const data = await readBody(request, 5 * 1024 * 1024);
+  if (typeof data.image !== 'string' || data.image.length > 4_500_000 ||
+      !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(data.image)) fail('Choose a JPEG, PNG, or WebP image under 3 MB.');
+  const day = new Date().toISOString().slice(0, 10);
+  const quota = await env.DB.prepare(`INSERT INTO food_ai_quota(day,used) VALUES(?,1)
+    ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<${foodAiDailyCap} RETURNING used`).bind(day).first();
+  if (!quota) fail('The daily photo analysis limit has been reached. Try again after midnight UTC.', 429);
+  let result;
+  try {
+    result = await env.AI.run(foodAiModel, {messages: [
+      {role: 'system', content: 'Estimate the foods and total nutrition visible in a single meal photo. Return only one JSON object with this shape: {"items":[{"name":"food","portion":"approximate portion"}],"nutrients":{"calories_kcal":0,"protein_g":0,"carbs_g":0,"fat_g":0,"fiber_g":0,"sugars_g":0,"sodium_mg":0}}. Include only visibly identifiable foods; estimate portions conservatively. Nutrient values are estimates for the entire visible meal. Use numbers, no units. If no food is visible, return {"items":[],"nutrients":{}}. Do not infer ingredients that cannot be seen.'},
+      {role: 'user', content: 'Identify this meal and estimate its nutrition.'},
+    ], image: data.image, max_tokens: 400, temperature: 0});
+  } catch { fail('Photo analysis is temporarily unavailable. Try again shortly.', 503); }
+  return json(parseFoodAi(result));
 }
 async function exportPage(url, env) {
   let after = 0, until;
@@ -341,10 +407,13 @@ async function route(request, env, ctx) {
     return new Response(null, {status: 204, headers: {...securityHeaders, ...extensionCors(origin)}});
   if (method === 'POST' && path === '/api/sync') return sync(request, env, ctx);
   if (method === 'POST' && path === '/api/login') return login(request, env);
-  const publicAsset = ['/login', '/login.js', '/style.css', '/magic.css', '/favicon.svg'].includes(path) && ['GET', 'HEAD'].includes(method);
+  const publicAsset = ['/login', '/login.js', '/style.css', '/magic.css', '/favicon.svg', '/manifest.webmanifest',
+    '/service-worker.js', '/offline.html', '/pwa-icon-192.svg', '/pwa-icon-512.svg', '/pwa-icon-maskable.svg',
+    '/pwa-icon-192.png', '/pwa-icon-512.png'].includes(path) && ['GET', 'HEAD'].includes(method);
   if (!publicAsset && !await authorized(request, env)) {
     if (path.startsWith('/api/')) fail('Sign in to your dashboard.', 401);
-    return new Response(null, {status: 302, headers: {...securityHeaders, Location: '/login'}});
+    const returnTo = path === '/' && url.searchParams.get('action') === 'food' ? '/login?return=%2F%3Faction%3Dfood' : '/login';
+    return new Response(null, {status: 302, headers: {...securityHeaders, Location: returnTo}});
   }
   if (method === 'POST' && path === '/api/logout') {
     await readBody(request);
@@ -352,6 +421,7 @@ async function route(request, env, ctx) {
     return json({signed_out: true}, 200, {'Set-Cookie': `${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});
   }
   if (method === 'POST' && path === '/api/devices') return pair(request, env);
+  if (method === 'POST' && path === '/api/food/analyze') return analyzeFood(request, env);
   if (method === 'PUT' && path === '/api/work-ai') {
     const data = await readBody(request);
     if (typeof data.enabled !== 'boolean') fail('enabled must be true or false.');
@@ -413,11 +483,16 @@ async function route(request, env, ctx) {
       return json(path === '/api/day' ? {date: day, totals: summarize(entries, start, end, rules), entries} : {entries});
     }
   }
-  const assets = {'/': '/index.html', '/app.js': '/app.js', '/style.css': '/style.css', '/magic.css': '/magic.css', '/favicon.svg': '/favicon.svg', '/login': '/login.html', '/login.js': '/login.js', '/api/docs': '/api.html'};
+  const assets = {'/': '/index.html', '/app.js': '/app.js', '/style.css': '/style.css', '/magic.css': '/magic.css', '/favicon.svg': '/favicon.svg',
+    '/manifest.webmanifest': '/manifest.webmanifest', '/service-worker.js': '/service-worker.js', '/offline.html': '/offline.html',
+    '/pwa-icon-192.svg': '/pwa-icon-192.svg', '/pwa-icon-512.svg': '/pwa-icon-512.svg', '/pwa-icon-maskable.svg': '/pwa-icon-maskable.svg',
+    '/pwa-icon-192.png': '/pwa-icon-192.png', '/pwa-icon-512.png': '/pwa-icon-512.png',
+    '/login': '/login.html', '/login.js': '/login.js', '/api/docs': '/api.html'};
   if (['GET', 'HEAD'].includes(method) && assets[path]) {
     url.pathname = assets[path]; url.search = '';
     const result = await env.ASSETS.fetch(new Request(url, {method}));
     const response = new Response(result.body, result);
+    if (path === '/manifest.webmanifest') response.headers.set('Content-Type', 'application/manifest+json; charset=utf-8');
     for (const [key, value] of Object.entries(securityHeaders)) response.headers.set(key, value);
     return response;
   }

@@ -11,8 +11,13 @@ Each device needs a one-time installation and its own pairing file. After setup,
 - **Windows:** foreground app sampling every five seconds; durable local SQLite queue; background HTTPS sync about every minute; automatic start at Windows sign-in. An optional Chrome extension records the active website's domain alongside app time.
 - **Pixel / Android 10+:** companion APK uses Android Usage Access, stores readable foreground app names locally, and schedules background collection/sync about every 15 minutes. Android may delay jobs. No accessibility service, screenshots, message content, or keystrokes are collected.
 - **Cloud:** password-protected dashboard, HTTPS, individual revocable device keys, retry deduplication, per-device daily totals, and an additional total that counts simultaneous usage only once.
+- **Food:** take or upload a meal photo; Cloudflare Workers AI suggests foods, portions, and nutrition estimates. Review and edit before saving. Photos are not saved in the food log, and the estimates can be inaccurate.
 
 **Start here: [cloud and device setup](CLOUD_SETUP.md).**
+
+### Install on Android
+
+Open the secure dashboard in Chrome on your phone, sign in, and tap **Install app** (or open Chrome’s menu and choose **Install app** / **Add to Home screen**). The installed app opens in its own window. Food photos and account data still need an internet connection.
 
 The cloud deployment uses **Cloudflare Workers + D1**, live at **https://simonsealsapi.dev**. The JavaScript Worker in `cloudflare/` serves the dashboard and implements the device upload protocol. The Python server remains available for local preview and development. Live login, upload, retry and revocation checks passed; physical-device installation and verification still need your PCs and Pixels. See [CLOUD_SETUP.md](CLOUD_SETUP.md) for your local password file and pairing instructions.
 
@@ -37,7 +42,7 @@ Python 3.12+ is the only server requirement:
 python server.py
 ```
 
-Open http://localhost:8000. Data is stored in `data/daybook.db`. The local preview does not pair devices until a sync endpoint is configured; use the deployed cloud dashboard for your five devices.
+Open http://localhost:8000. Data is stored in `data/daybook.db`. Photo-based food logging requires the deployed Cloudflare dashboard because the local Python preview has no vision model binding. The local preview does not pair devices until a sync endpoint is configured; use the deployed cloud dashboard for your five devices.
 
 For local HTTPS integration testing, OpenSSL (included with Git for Windows) can generate a paired certificate:
 

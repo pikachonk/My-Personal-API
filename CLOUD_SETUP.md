@@ -2,6 +2,8 @@
 
 SimonSealsAPI now supports **Cloudflare Workers + D1** at **https://simonsealsapi.dev**. Workers serves the dashboard and API; D1 stores activity, paired devices, and login sessions. Your Windows collectors and Pixel APK use the same pairing/upload format.
 
+Food photo logging uses Cloudflare Workers AI's [Gemma 4 vision model](https://developers.cloudflare.com/workers-ai/models/gemma-4-26b-a4b-it/). Photo analysis is capped at 20 requests per UTC day; meal names and nutrition estimates are saved, while the photo itself is not saved in D1.
+
 **Deployed September 23, 2026:** open https://simonsealsapi.dev and sign in. Your generated dashboard password is in [data/cloudflare-dashboard-password.txt](data/cloudflare-dashboard-password.txt) in this workspace. That file is restricted to your Windows account and excluded from release ZIPs and version control. Save the password in your password manager. It is separate from your Cloudflare login.
 
 The remote D1 database, password secret, Worker, and custom domain have been created. Live HTTPS checks passed for login/logout, manual activities, five temporary device pairings, a 200-event upload, retries, and revocation. Temporary test records were removed. Your physical devices still need pairing below.

@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "SimonSealsAPI",
+  "short_name": "SimonSeals",
+  "description": "Your personal activity, food, and nutrition log.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0b1228",
+  "background_color": "#0b1228",
+  "icons": [
+    {"src": "/pwa-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/pwa-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/pwa-icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/pwa-icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/pwa-icon-maskable.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {
+      "name": "Log food",
+      "short_name": "Food",
+      "url": "/?action=food",
+      "icons": [{"src": "/pwa-icon-192.png", "sizes": "192x192", "type": "image/png"}]
+    }
+  ]
+}
